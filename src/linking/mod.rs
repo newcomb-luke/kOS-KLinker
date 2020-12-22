@@ -49,7 +49,36 @@ impl Linker {
             main_section.add(instr.clone());
         }
 
-        let number_text_bytes = main_section.size();
+        let mut func_sections = Vec::new();
+
+        for section in object_file.get_subrt_sections() {
+            let mut func_section = CodeSection::new(SectionType::FUNCTION, argument_section.get_addr_bytes());
+            let mut func_instructions = Vec::new();
+
+            for instr in section.get_instructions() {
+                func_instructions.push(Instr::from_rel(instr, &argument_section)?);
+            }
+
+            for instr in func_instructions {
+                func_section.add(instr);
+            }
+
+            func_sections.push(func_section);
+        }
+
+        let mut number_text_bytes = main_section.size();
+
+        for section in func_sections.iter() {
+            number_text_bytes += section.size();
+        }
+
+        let mut all_code_sections = Vec::new();
+
+        for section in func_sections {
+            all_code_sections.push(section);
+        }
+
+        all_code_sections.push(main_section);
 
         println!("{}", number_text_bytes);
 
@@ -67,7 +96,7 @@ impl Linker {
 
         debug_section.add(DebugEntry::new(1, vec![ (6, number_text_bytes + 5) ]));
 
-        let final_file = KSMFile::new(argument_section, vec![ main_section ], debug_section);
+        let final_file = KSMFile::new(argument_section, all_code_sections, debug_section);
 
         Ok(final_file)
     }

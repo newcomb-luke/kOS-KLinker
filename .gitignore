@@ -12,3 +12,6 @@ Cargo.lock
 test.ko
 test.ksm
 test
+
+out.ko
+out.ksm

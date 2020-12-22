@@ -13,4 +13,4 @@ homepage = "https://github.com/newcomb-luke/kOS-KLinker"
 [dependencies]
 clap = "~2.27.0"
 flate2 = "1.0"
-kerbalobjects = "1.0.3"
+kerbalobjects = "1.0.8"
