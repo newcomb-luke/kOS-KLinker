@@ -1,12 +1,15 @@
-use std::{error::Error, fs::File};
 use flate2::{write::GzEncoder, Compression};
 use std::io::prelude::*;
+use std::{error::Error, fs::File};
 
 mod sections;
-pub use sections::{ArgumentSection, CodeSection, DebugSection, SectionType, DebugEntry};
+pub use sections::{ArgumentSection, CodeSection, DebugEntry, DebugSection, SectionType};
 
 mod instruction;
 pub use instruction::Instr;
+
+mod errors;
+use errors::KSMResult;
 
 // The magic number for KSM Files is 'k' 3 X E
 // In hex this is: 0x6b335845, however we need it to be little-endian so it is written as:
@@ -32,7 +35,6 @@ impl KSMFile {
     }
 
     pub fn write(&mut self, writer: &mut KSMFileWriter) -> Result<(), Box<dyn Error>> {
-
         writer.write_uint32(MAGIC_NUMBER)?;
 
         self.argument_section.write(writer)?;
@@ -44,7 +46,6 @@ impl KSMFile {
         self.debug_section.write(writer)?;
 
         Ok(())
-
     }
 
     pub fn get_argument_section(&self) -> &ArgumentSection {
@@ -63,11 +64,10 @@ impl KSMFile {
 pub struct KSMFileWriter {
     filename: String,
     current_index: usize,
-    contents: Vec<u8>
+    contents: Vec<u8>,
 }
 
 impl KSMFileWriter {
-
     pub fn new(filename: &str) -> KSMFileWriter {
         KSMFileWriter {
             filename: filename.to_owned(),
@@ -77,7 +77,6 @@ impl KSMFileWriter {
     }
 
     pub fn write_to_file(&mut self) -> Result<(), Box<dyn Error>> {
-
         let mut file = File::create(&self.filename)?;
 
         let mut zipped_contents: Vec<u8> = Vec::new();
@@ -88,7 +87,7 @@ impl KSMFileWriter {
 
         encoder.finish()?;
 
-        file.write_all( zipped_contents.as_slice() )?;
+        file.write_all(zipped_contents.as_slice())?;
 
         Ok(())
     }
@@ -181,7 +180,6 @@ impl KSMFileWriter {
     }
 
     pub fn write_variable(&mut self, number_bytes: u8, value: u32) -> Result<(), Box<dyn Error>> {
-
         let bytes = u32::to_le_bytes(value);
 
         for i in 0..number_bytes as usize {
@@ -190,5 +188,4 @@ impl KSMFileWriter {
 
         Ok(())
     }
-
 }

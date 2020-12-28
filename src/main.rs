@@ -10,29 +10,37 @@ fn main() {
         .about("Links KerbalObject files into KSM files to be run by kOS.")
         .arg(
             Arg::with_name("INPUT")
-                .help("Sets the input file to use")
+                .help("Sets the input file(s) to use")
                 .required(true)
-                .index(1),
+                .index(1)
+                .min_values(1)
         )
         .arg(
             Arg::with_name("output_path")
                 .help("Sets the output file to use")
                 .short("o")
                 .long("output")
-                .takes_value(true),
+                .takes_value(true)
+                .required(true)
+        )
+        .arg(
+            Arg::with_name("shared_object")
+                .help("Will link the object files into a shared object file instead of being linked into an executable file")
+                .short("s")
+                .long("shared")
         )
         .arg(
             Arg::with_name("debug")
-                .help("Displays debugging information during the assembly process.")
+                .help("Outputs some debugging information that probably is only useful for developers of this tool")
                 .short("d")
-                .long("debug"),
+                .long("debug")
         )
         .get_matches();
 
     let config = CLIConfig::new(matches);
 
     if let Err(e) = run(&config) {
-        eprintln!("Application error: {}", e);
+        eprintln!("{}", e);
 
         process::exit(1);
     }

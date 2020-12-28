@@ -1,0 +1,8 @@
+
+FUNCTION ADDI
+{
+	PARAMETER A.
+	PARAMETER B.
+	
+	RETURN A + B.
+}.

@@ -1,6 +1,6 @@
 [package]
 name = "klinker"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Luke Newcomb <newcomb.luke@protonmail.com>"]
 edition = "2018"
 license = "GPL-3.0"
@@ -13,4 +13,4 @@ homepage = "https://github.com/newcomb-luke/kOS-KLinker"
 [dependencies]
 clap = "~2.27.0"
 flate2 = "1.0"
-kerbalobjects = "1.0.8"
+kerbalobjects = "2.0.5"

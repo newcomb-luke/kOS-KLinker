@@ -1,6 +1,8 @@
-use std::{collections::HashMap, error::Error};
-use crate::KOSValue;
 use super::{Instr, KSMFileWriter};
+use crate::KOSValue;
+use std::{collections::HashMap, error::Error};
+
+use super::KSMResult;
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum SectionType {
@@ -17,7 +19,6 @@ pub struct CodeSection {
 }
 
 impl CodeSection {
-
     pub fn new(section_type: SectionType, addr_bytes: u32) -> CodeSection {
         CodeSection {
             section_type,
@@ -34,17 +35,16 @@ impl CodeSection {
     }
 
     pub fn write(&self, writer: &mut KSMFileWriter) -> Result<(), Box<dyn Error>> {
-
         writer.write(b'%')?;
         writer.write(b'F')?;
 
         // Starting delimiters
         match self.section_type {
-            SectionType::FUNCTION => {},
+            SectionType::FUNCTION => {}
             SectionType::INITIALIZATION => {
                 writer.write(b'%')?;
                 writer.write(b'I')?;
-            },
+            }
             SectionType::MAIN => {
                 writer.write(b'%')?;
                 writer.write(b'I')?;
@@ -64,11 +64,11 @@ impl CodeSection {
                 writer.write(b'I')?;
                 writer.write(b'%')?;
                 writer.write(b'M')?;
-            },
+            }
             SectionType::INITIALIZATION => {
                 writer.write(b'%')?;
                 writer.write(b'M')?;
-            },
+            }
             SectionType::MAIN => {}
         }
 
@@ -78,7 +78,6 @@ impl CodeSection {
     pub fn size(&self) -> u32 {
         self.size
     }
-
 }
 
 pub struct DebugSection {
@@ -87,7 +86,6 @@ pub struct DebugSection {
 }
 
 impl DebugSection {
-
     pub fn new(range_size: u8) -> DebugSection {
         DebugSection {
             range_size,
@@ -100,7 +98,6 @@ impl DebugSection {
     }
 
     pub fn write(&self, writer: &mut KSMFileWriter) -> Result<(), Box<dyn Error>> {
-
         writer.write(b'%')?;
 
         writer.write(b'D')?;
@@ -113,27 +110,24 @@ impl DebugSection {
 
         Ok(())
     }
-
 }
 
 pub struct DebugEntry {
     pub line_number: u16,
     pub num_ranges: u8,
-    pub ranges: Vec<(u32,u32)>,
+    pub ranges: Vec<(u32, u32)>,
 }
 
 impl DebugEntry {
-
-    pub fn new(line_number: u16, ranges: Vec<(u32,u32)>) -> DebugEntry {
+    pub fn new(line_number: u16, ranges: Vec<(u32, u32)>) -> DebugEntry {
         DebugEntry {
             line_number,
             num_ranges: ranges.len() as u8,
-            ranges
+            ranges,
         }
     }
 
     pub fn write(&self, range_size: u8, writer: &mut KSMFileWriter) -> Result<(), Box<dyn Error>> {
-
         writer.write_uint16(self.line_number)?;
 
         writer.write(self.num_ranges)?;
@@ -145,65 +139,65 @@ impl DebugEntry {
 
         Ok(())
     }
-
 }
 
 pub struct ArgumentSection {
     addr_bytes: u8,
     argument_list: Vec<KOSValue>,
-    index_to_addr: HashMap<u32,u32>,
+    index_to_addr: HashMap<u32, u32>,
     size: usize,
 }
 
 pub struct KOSArgument {}
 
 impl KOSArgument {
-
-    pub fn write_kosval(value: &KOSValue, writer: &mut KSMFileWriter) -> Result<(), Box<dyn Error>> {
-
+    pub fn write_kosval(
+        value: &KOSValue,
+        writer: &mut KSMFileWriter,
+    ) -> Result<(), Box<dyn Error>> {
         match value {
             KOSValue::NULL => writer.write(0)?,
             KOSValue::BOOL(b) => {
                 writer.write(1)?;
                 writer.write_boolean(*b)?;
-            },
+            }
             KOSValue::BYTE(b) => {
                 writer.write(2)?;
                 writer.write_byte(*b)?;
-            },
+            }
             KOSValue::INT16(i) => {
                 writer.write(3)?;
                 writer.write_int16(*i)?;
-            },
+            }
             KOSValue::INT32(i) => {
                 writer.write(4)?;
                 writer.write_int32(*i)?;
-            },
+            }
             KOSValue::FLOAT(f) => {
                 writer.write(5)?;
                 writer.write_float(*f)?;
-            },
+            }
             KOSValue::DOUBLE(d) => {
                 writer.write(6)?;
                 writer.write_double(*d)?;
-            },
+            }
             KOSValue::STRING(s) => {
                 writer.write(7)?;
                 writer.write_kos_string(s)?;
-            },
+            }
             KOSValue::ARGMARKER => writer.write(8)?,
             KOSValue::SCALARINT(i) => {
                 writer.write(9)?;
                 writer.write_int32(*i)?;
-            },
+            }
             KOSValue::SCALARDOUBLE(d) => {
                 writer.write(10)?;
                 writer.write_double(*d)?;
-            },
+            }
             KOSValue::BOOLEANVALUE(b) => {
                 writer.write(11)?;
                 writer.write_boolean(*b)?;
-            },
+            }
             KOSValue::STRINGVALUE(s) => {
                 writer.write(12)?;
                 writer.write_kos_string(s)?;
@@ -211,13 +205,10 @@ impl KOSArgument {
         }
 
         Ok(())
-
     }
-
 }
 
 impl ArgumentSection {
-
     pub fn new() -> ArgumentSection {
         ArgumentSection {
             addr_bytes: 4,
@@ -227,21 +218,44 @@ impl ArgumentSection {
         }
     }
 
-    pub fn add(&mut self, value: KOSValue) -> usize {
+    /// Adds a KOSValue to the argument section, but checks if the argument already exists
+    /// Returns the index into the argument section that this argument is at
+    pub fn add(&mut self, value: KOSValue) -> KSMResult<usize> {
+        Ok(if self.argument_list.contains(&value) {
+            let mut arg_index = self.argument_list.iter();
+            let index = arg_index.position(|v| *v == value).unwrap();
 
+            *self.index_to_addr.get(&(index as u32)).unwrap() as usize
+        } else {
+            let addr = self.size;
+
+            self.size += value.size() as usize;
+
+            self.argument_list.push(value);
+
+            self.index_to_addr
+                .insert(self.argument_list.len() as u32 - 1, addr as u32);
+
+            addr
+        })
+    }
+
+    /// Unconditionally adds a KOSValue to the argument section
+    /// Returns the index into the argument section that this argument is at
+    pub fn add_no_check(&mut self, value: KOSValue) -> usize {
         let addr = self.size;
 
         self.size += value.size() as usize;
 
         self.argument_list.push(value);
 
-        self.index_to_addr.insert(self.argument_list.len() as u32 - 1, addr as u32);
+        self.index_to_addr
+            .insert(self.argument_list.len() as u32 - 1, addr as u32);
 
         addr
     }
 
     pub fn write(&mut self, writer: &mut KSMFileWriter) -> Result<(), Box<dyn Error>> {
-
         writer.write(b'%')?;
         writer.write(b'A')?;
 
@@ -262,7 +276,6 @@ impl ArgumentSection {
     }
 
     pub fn get_addr_bytes(&mut self) -> u32 {
-
         self.addr_bytes = 1;
 
         if self.size > 255 {
@@ -277,5 +290,4 @@ impl ArgumentSection {
 
         self.addr_bytes as u32
     }
-
 }
