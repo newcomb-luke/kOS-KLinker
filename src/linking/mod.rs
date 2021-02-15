@@ -1,5 +1,5 @@
 use crate::{KOFile, KOSValue};
-use std::{collections::HashMap, error::Error, todo};
+use std::{collections::HashMap, error::Error};
 
 use crate::ksm::{
     ArgumentSection, CodeSection, DebugEntry, DebugSection, Instr, KSMFile, SectionType,
@@ -70,12 +70,12 @@ impl Linker {
                 let func_info = func_sym.get_info();
 
                 if func_info == SymbolInfo::GLOBAL {
-                    if func_name == "_start" {
+                    if func_name == ".text" {
                         // If we already had a main section, then that is a duplicate symbol error
                         if !main_code_file.is_empty() {
                             return Err(LinkError::DuplicateSymbolError(
                                 file_name,
-                                "_start".into(),
+                                ".text".into(),
                                 main_code_file,
                             )
                             .into());
@@ -160,6 +160,8 @@ impl Linker {
             argument_section.add(KOSValue::STRING(comment))?;
         }
 
+        let addr_bytes;
+
         if !shared {
             // This will build an executable
 
@@ -182,7 +184,7 @@ impl Linker {
                 final_instructions.push(final_instr);
             }
 
-            let addr_bytes = argument_section.get_addr_bytes();
+            addr_bytes = argument_section.get_addr_bytes();
             let mut text_section = CodeSection::new(SectionType::MAIN, addr_bytes);
 
             for instr in final_instructions {
@@ -193,12 +195,116 @@ impl Linker {
         } else {
             // This will build a shared library
 
-            todo!();
+            let mut executable_code = Vec::new();
+
+            let mut final_lc = 1;
+
+            executable_code.append(&mut init_code);
+            executable_code.append(&mut main_code);
+
+            let safe_functions = Linker::safeify_functions(1, functions);
+
+            let mut new_functions = Vec::with_capacity(safe_functions.len());
+
+            for func in safe_functions {
+                new_functions.push(Linker::resolve_shared_func_refs(&func));
+            }
+
+            let mut final_functions = Vec::with_capacity(new_functions.len());
+
+            for func in new_functions {
+                let mut new_func_vec = Vec::with_capacity(func.len());
+
+                final_lc += get_real_section_len(&func);
+
+                for instr in func {
+                    let final_instr = syminstr_to_instr(instr, &mut argument_section)?;
+
+                    new_func_vec.push(final_instr);
+                }
+                
+                final_functions.push(new_func_vec);
+            }
+
+            addr_bytes = argument_section.get_addr_bytes();
+
+            for func in final_functions {
+                let mut func_section = CodeSection::new(SectionType::FUNCTION, addr_bytes);
+
+                for instr in func {
+                    func_section.add(instr);
+                }
+
+                code_sections.push(func_section);
+            }
+
+            if !executable_code.is_empty() {
+                let lbrt = SymInstr::new(
+                    0xf0,
+                    vec![Operand::Value(KOSValue::STRING(format!("@{:>04}", final_lc)))],
+                );
+                executable_code.insert(0, lbrt);
+
+                let exec_func = Function::new("_exec", "multiple files", executable_code);
+
+                let new_exec = Linker::resolve_shared_func_refs(&exec_func);
+
+                let mut final_exec = Vec::with_capacity(new_exec.len());
+
+                for instr in new_exec {
+                    let final_instr = syminstr_to_instr(instr, &mut argument_section)?;
+
+                    final_exec.push(final_instr);
+                }
+
+                let mut main_section = CodeSection::new(SectionType::MAIN, argument_section.get_addr_bytes());
+
+                for instr in final_exec {
+                    main_section.add(instr);
+                }
+
+                code_sections.push(main_section);
+            }
+
         }
 
-        debug_section = DebugSection::new(1);
+        let mut missing_function = true;
+        let mut missing_init = true;
+        let mut missing_main = true;
 
-        debug_section.add(DebugEntry::new(1, vec![ (0, 2) ]));
+        for section in &code_sections {
+            if section.get_type() == SectionType::FUNCTION {
+                missing_function = false;
+            } else if section.get_type() == SectionType::INITIALIZATION {
+                missing_init = false;
+            } else {
+                missing_main = false;
+            }
+        }
+
+        if missing_function {
+            code_sections.insert(0, CodeSection::new(SectionType::FUNCTION, addr_bytes));
+        }
+        if missing_init {
+            if missing_main {
+                code_sections.push(CodeSection::new(SectionType::INITIALIZATION, addr_bytes));
+            } else {
+                code_sections.insert(code_sections.len() - 1, CodeSection::new(SectionType::INITIALIZATION, addr_bytes));
+            }
+        }
+        if missing_main {
+            code_sections.push(CodeSection::new(SectionType::MAIN, addr_bytes));
+        }
+
+        let mut full_code_size = 0;
+
+        for code_section in &code_sections {
+            full_code_size += code_section.size() + 2;
+        }
+
+        debug_section = DebugSection::new(fewest_bytes_to_hold(full_code_size));
+
+        debug_section.add(DebugEntry::new(1, vec![ (0, 500) ]));
 
         ksm_file = KSMFile::new(argument_section, code_sections, debug_section);
 
@@ -270,6 +376,35 @@ impl Linker {
         Ok(sym_instrs)
     }
 
+    /// Adds two label resets to the beginnings of each function, which sets the function's label to it's name
+    pub fn safeify_functions(start_lc: u32, mut functions: Vec<Function>) -> Vec<Function> {
+
+        let mut lc = start_lc;
+
+        for func in &mut functions {
+            // We need to add a label reset that contains the function's name
+            let name_lbrt = SymInstr::new(
+                0xf0,
+                vec![Operand::Value(KOSValue::STRING(func.id.to_owned()))],
+            );
+
+            func.instr.insert(0, name_lbrt);
+
+            let lc_string = format!("@{:0>4}", lc+1);
+
+            // Now we need to add a label reset that contains the actual location counter to get kOS back on track
+            let location_lbrt = SymInstr::new(
+                0xf0,
+                vec![Operand::Value(KOSValue::STRING(lc_string))],
+            );
+            func.instr.insert(2, location_lbrt);
+
+            lc += get_real_section_len(&func.instr);
+        }
+
+        functions
+    }
+
     /// Searches through the object file's symbol table for a function symbol with a section index that matches the given index
     pub fn get_func_sym(
         object_file: &KOFile,
@@ -309,6 +444,33 @@ impl Linker {
         }
 
         Ok(output)
+    }
+
+    /// This function will resolve any references to functions within another function, but called in a manner for shared objects
+    /// This returns a vector of SymInstr where no operands will be function references
+    pub fn resolve_shared_func_refs(
+        func: &Function
+    ) -> Vec<SymInstr> {
+        let mut new_instr = Vec::with_capacity(func.instr.len());
+
+        for instr in &func.instr {
+            let opcode = instr.opcode;
+
+            let mut new_operands = Vec::with_capacity(instr.operands.len());
+
+            for operand in &instr.operands {
+                let new_operand = match operand {
+                    Operand::Value(v) => Operand::Value(v.clone()),
+                    Operand::FuncRef(f) => Operand::Value(KOSValue::STRING(f.to_owned()))
+                };
+
+                new_operands.push(new_operand);
+            }
+
+            new_instr.push(SymInstr::new(opcode, new_operands));
+        }
+
+        new_instr
     }
 
     /// This function will resolve any references to functions within another function
@@ -415,7 +577,6 @@ fn get_real_section_len(instrs: &Vec<SymInstr>) -> u32 {
 }
 
 /// Returns the fewest number of bytes that are required to hold the given value
-#[allow(dead_code)]
 fn fewest_bytes_to_hold(value: u32) -> u8 {
     if value < 255 {
         1

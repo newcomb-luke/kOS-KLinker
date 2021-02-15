@@ -8,7 +8,7 @@ pub use linking::*;
 mod ksm;
 pub use ksm::*;
 
-pub static VERSION: &'static str = "1.0.0";
+pub static VERSION: &'static str = "1.0.2";
 
 pub fn run(config: &CLIConfig) -> Result<(), Box<dyn Error>> {
     let mut output_path = config.output_path_value.clone();
@@ -58,12 +58,8 @@ impl CLIConfig {
 
                 v
             },
-            output_path_value: if matches.is_present("output_path") {
-                String::from(matches.value_of("output_path").unwrap())
-            } else {
-                String::new()
-            },
-            shared: matches.is_present("shared"),
+            output_path_value: String::from(matches.value_of("output_path").unwrap_or("")),
+            shared: matches.is_present("shared_object"),
             debug: matches.is_present("debug")
         }
     }

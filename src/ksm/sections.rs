@@ -35,19 +35,18 @@ impl CodeSection {
     }
 
     pub fn write(&self, writer: &mut KSMFileWriter) -> Result<(), Box<dyn Error>> {
-        writer.write(b'%')?;
-        writer.write(b'F')?;
 
         // Starting delimiters
         match self.section_type {
-            SectionType::FUNCTION => {}
+            SectionType::FUNCTION => {
+                writer.write(b'%')?;
+                writer.write(b'F')?;
+            }
             SectionType::INITIALIZATION => {
                 writer.write(b'%')?;
                 writer.write(b'I')?;
             }
             SectionType::MAIN => {
-                writer.write(b'%')?;
-                writer.write(b'I')?;
                 writer.write(b'%')?;
                 writer.write(b'M')?;
             }
@@ -57,26 +56,15 @@ impl CodeSection {
             instr.write(self.addr_bytes, writer)?;
         }
 
-        // Ending delimiters
-        match self.section_type {
-            SectionType::FUNCTION => {
-                writer.write(b'%')?;
-                writer.write(b'I')?;
-                writer.write(b'%')?;
-                writer.write(b'M')?;
-            }
-            SectionType::INITIALIZATION => {
-                writer.write(b'%')?;
-                writer.write(b'M')?;
-            }
-            SectionType::MAIN => {}
-        }
-
         Ok(())
     }
 
     pub fn size(&self) -> u32 {
         self.size
+    }
+
+    pub fn get_type(&self) -> SectionType {
+        self.section_type
     }
 }
 
