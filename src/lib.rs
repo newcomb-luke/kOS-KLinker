@@ -22,8 +22,12 @@ pub fn run(config: &CLIConfig) -> Result<(), Box<dyn Error>> {
     for file_path in &config.file_paths {
         let raw_contents = fs::read(&file_path)?;
 
+        // let start = std::time::Instant::now();
         let mut reader = KOFileReader::new(raw_contents)?;
         let kofile = KOFile::read(&mut reader)?;
+        // let finished = start.elapsed().as_micros();
+
+        // println!("Time to read: {}", finished);
 
         kofiles.push(kofile);
     }
@@ -43,7 +47,7 @@ pub struct CLIConfig {
     pub file_paths: Vec<String>,
     pub output_path_value: String,
     pub shared: bool,
-    pub debug: bool
+    pub debug: bool,
 }
 
 impl CLIConfig {
@@ -60,7 +64,7 @@ impl CLIConfig {
             },
             output_path_value: String::from(matches.value_of("output_path").unwrap_or("")),
             shared: matches.is_present("shared_object"),
-            debug: matches.is_present("debug")
+            debug: matches.is_present("debug"),
         }
     }
 }

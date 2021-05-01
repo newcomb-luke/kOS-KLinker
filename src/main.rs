@@ -4,7 +4,7 @@ use std::process;
 use klinker::{run, CLIConfig};
 
 fn main() {
-    let matches = App::new("Kerbal Assembler")
+    let matches = App::new("Kerbal Linker")
         .version(klinker::VERSION)
         .author("Luke Newcomb")
         .about("Links KerbalObject files into KSM files to be run by kOS.")
