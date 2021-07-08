@@ -1,14 +1,15 @@
 use clap::ArgMatches;
-use kerbalobjects::*;
-use std::{error::Error, fs};
+use driver::Driver;
+use std::error::Error;
+use std::io::prelude::*;
 
-mod linking;
-pub use linking::*;
+pub mod driver;
 
-mod ksm;
-pub use ksm::*;
+pub mod tables;
 
-pub static VERSION: &'static str = "1.0.2";
+use kerbalobjects::ToBytes;
+
+pub static VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 pub fn run(config: &CLIConfig) -> Result<(), Box<dyn Error>> {
     let mut output_path = config.output_path_value.clone();
@@ -17,35 +18,30 @@ pub fn run(config: &CLIConfig) -> Result<(), Box<dyn Error>> {
         output_path.push_str(".ksm");
     }
 
-    let mut kofiles = Vec::new();
+    let mut driver = Driver::new(config.to_owned());
 
     for file_path in &config.file_paths {
-        let raw_contents = fs::read(&file_path)?;
-
-        // let start = std::time::Instant::now();
-        let mut reader = KOFileReader::new(raw_contents)?;
-        let kofile = KOFile::read(&mut reader)?;
-        // let finished = start.elapsed().as_micros();
-
-        // println!("Time to read: {}", finished);
-
-        kofiles.push(kofile);
+        driver.add(file_path);
     }
 
-    let mut ksm_file = Linker::link(kofiles, config.debug, config.shared)?;
+    let ksm_file = driver.link()?;
 
-    let mut writer = KSMFileWriter::new(&output_path);
+    let mut file_buffer = Vec::with_capacity(2048);
 
-    ksm_file.write(&mut writer)?;
+    ksm_file.to_bytes(&mut file_buffer);
 
-    writer.write_to_file()?;
+    let mut file = std::fs::File::create(output_path)?;
+
+    file.write_all(file_buffer.as_slice())?;
 
     Ok(())
 }
 
+#[derive(Debug, Clone)]
 pub struct CLIConfig {
     pub file_paths: Vec<String>,
     pub output_path_value: String,
+    pub entry_point: String,
     pub shared: bool,
     pub debug: bool,
 }
@@ -62,7 +58,8 @@ impl CLIConfig {
 
                 v
             },
-            output_path_value: String::from(matches.value_of("output_path").unwrap_or("")),
+            output_path_value: String::from(matches.value_of("output_path").unwrap()),
+            entry_point: String::from(matches.value_of("entry_point").unwrap()),
             shared: matches.is_present("shared_object"),
             debug: matches.is_present("debug"),
         }

@@ -24,6 +24,14 @@ fn main() {
                 .required(true)
         )
         .arg(
+            Arg::with_name("entry_point")
+                .help("The name of the function that the program should begin execution")
+                .short("e")
+                .long("entry-point")
+                .takes_value(true)
+                .default_value("_start")
+        )
+        .arg(
             Arg::with_name("shared_object")
                 .help("Will link the object files into a shared object file instead of being linked into an executable file")
                 .short("s")
