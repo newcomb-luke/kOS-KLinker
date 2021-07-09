@@ -22,6 +22,8 @@ pub enum LinkError {
     StringConversionError,
     InternalError(String),
     DataIndexOverflowError,
+    MissingEntryPointError(String),
+    MissingInitFunctionError,
 }
 
 #[derive(Debug)]
@@ -99,6 +101,16 @@ impl Display for LinkError {
             }
             LinkError::DataIndexOverflowError => {
                 write!(f, "All of the instruction data takes more than 4 bytes to index. The maximum instruction operand width is 4 bytes. Try to reduce file size and try again.")
+            }
+            LinkError::MissingEntryPointError(entry_point) => {
+                write!(
+                    f,
+                    "Cannot create executable, missing entry point: {}.",
+                    entry_point
+                )
+            }
+            LinkError::MissingInitFunctionError => {
+                write!(f, "Cannot create shared object, missing _init function.")
             }
         }
     }

@@ -1,19 +1,20 @@
 use crate::driver::errors::{LinkError, ProcessingError};
 use crate::tables::{
-    ContextHash, DataTable, Function, FunctionTable, MasterSymbolEntry, NameTable, ObjectData,
-    SymbolEntry, SymbolTable, TempInstr, TempOperand,
+    ContextHash, DataTable, Function, FunctionTable, MasterSymbolEntry, NameTable, NameTableEntry,
+    ObjectData, SymbolEntry, SymbolTable, TempInstr, TempOperand,
 };
 use crate::CLIConfig;
 use errors::LinkResult;
 use kerbalobjects::kofile::sections::{ReldSection, SectionIndex};
 use kerbalobjects::kofile::symbols::{KOSymbol, SymBind, SymType};
 use kerbalobjects::kofile::KOFile;
-use kerbalobjects::ksmfile::KSMFile;
+use kerbalobjects::ksmfile::sections::{ArgumentSection, CodeSection, DebugEntry, DebugRange};
+use kerbalobjects::ksmfile::{Instr, KSMFile};
 use kerbalobjects::{FromBytes, KOSValue};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::num::NonZeroUsize;
 use std::panic;
@@ -55,39 +56,62 @@ impl Driver {
             object_data.push(data);
         }
 
-        let entry_point_hash = {
+        let init_hash = {
             let mut hasher = DefaultHasher::new();
 
+            hasher.write("_init".as_bytes());
+
+            hasher.finish()
+        };
+
+        let entry_point_hash = {
             // If this should be linked as a shared object
             if self.config.shared {
-                // Then the "entry point" is "_init"
-                hasher.write("_init".as_bytes());
+                init_hash
             }
             // If not, then it is the entry point provided
             else {
+                let mut hasher = DefaultHasher::new();
                 hasher.write(self.config.entry_point.as_bytes());
+                hasher.finish()
             }
-
-            hasher.finish()
         };
 
         let mut master_data_table = DataTable::new();
         let mut master_symbol_table = NameTable::<MasterSymbolEntry>::new();
         let mut master_function_vec = Vec::new();
+        let mut init_function = None;
+        let mut start_function = None;
         let mut master_function_name_table = NameTable::<NonZeroUsize>::new();
         let mut file_name_table = NameTable::<()>::new();
         let mut master_comment: Option<String> = None;
-        let mut master_comment_kosvalue = None;
 
-        let mut data_size = 3; // Offset for %A in KSM file
-        let mut index_size = 0;
+        let mut ksm_file = KSMFile::new();
+        let arg_section = ksm_file.arg_section_mut();
+        // We only have one single code section that contains all executable instructions
+        let mut code_section = CodeSection::new(kerbalobjects::ksmfile::sections::CodeType::Main);
+
+        // Maps data hashes to arg section indexes
+        let mut data_hash_map = HashMap::<u64, usize>::new();
+        // Maps function name hashes to absolute instruction indexes
+        let mut func_hash_map = HashMap::<u64, usize>::new();
+        // Keeps track of all of the functions that are referenced
+        let mut func_ref_vec = Vec::new();
 
         // Resolve all symbols
         for data in object_data.iter_mut() {
             let mut hasher = DefaultHasher::new();
             hasher.write(data.input_file_name.as_bytes());
             let file_name_hash = ContextHash::FileNameHash(hasher.finish());
-            file_name_table.insert(data.input_file_name.clone(), ());
+            let file_entry = NameTableEntry::from(data.input_file_name.to_owned(), ());
+            let file_name_index = file_name_table.insert(file_entry);
+
+            // Add all function names
+            for mut func_entry in data.function_name_table.drain() {
+                // Update the file name index
+                func_entry.set_value(file_name_index);
+                master_function_name_table.insert(func_entry);
+            }
 
             // Resolve all symbols in this file
             Driver::resolve_symbols(
@@ -107,57 +131,285 @@ impl Driver {
             }
         }
 
-        // Factor in the comment if it exists
-        match master_comment {
-            Some(comment) => {
-                let value = KOSValue::String(comment);
-                data_size += value.size_bytes();
-
-                master_comment_kosvalue = Some(value);
-            }
-            None => {}
-        }
-
-        // Calculate the size of instruction operands
-        // This is required to find out how large the functions will be
-        data_size += master_data_table.size_bytes();
-
-        index_size = Driver::size_to_hold(data_size);
-
-        // Maximum number of bytes supported is 4
-        if index_size > 4 {
-            return Err(LinkError::DataIndexOverflowError);
-        }
-
-        println!("Master symbol table: {:#?}", master_symbol_table);
-
-        println!("Master data table: {:#?}", master_data_table);
-
+        // This really sucks. But it is the only way to know if a function is actually used
+        // TODO: Fix this somehow?
         for data in object_data.iter() {
             for func in data.function_table.functions() {
-                for instr in func.instructions() {}
+                for instr in func.instructions() {
+                    match instr {
+                        TempInstr::ZeroOp(_) => {}
+                        TempInstr::OneOp(_, op1) => {
+                            // If it is a symbol reference
+                            if let TempOperand::SymNameHash(hash) = op1 {
+                                // If it exists (it will at this point)
+                                if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
+                                    // If it is a function
+                                    if sym.value().internal().sym_type() == SymType::Func {
+                                        // Then that function was referenced
+                                        func_ref_vec.push(*hash);
+                                    }
+                                }
+                            }
+                        }
+                        TempInstr::TwoOp(_, op1, op2) => {
+                            if let TempOperand::SymNameHash(hash) = op1 {
+                                if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
+                                    if sym.value().internal().sym_type() == SymType::Func {
+                                        func_ref_vec.push(*hash);
+                                    }
+                                }
+                            }
+                            if let TempOperand::SymNameHash(hash) = op2 {
+                                if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
+                                    if sym.value().internal().sym_type() == SymType::Func {
+                                        func_ref_vec.push(*hash);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        unimplemented!();
+        // Now add all of the functions that are referenced
+        for mut data in object_data {
+            for func in data.function_table.drain() {
+                if func.name_hash() == init_hash {
+                    init_function = Some(func);
+                } else if func.name_hash() == entry_point_hash {
+                    start_function = Some(func);
+                } else {
+                    // If it isn't special, check the reference list
+                    if func_ref_vec.contains(&func.name_hash()) {
+                        master_function_vec.push(func);
+                    }
+                }
+            }
+        }
+
+        // Add in the comment if it exists
+        if let Some(comment) = master_comment {
+            let value = KOSValue::String(comment);
+            arg_section.add(value);
+        }
+
+        // Add the init function (if it exists)
+        match &init_function {
+            Some(func) => {
+                let size = func.instruction_count();
+
+                func_hash_map.insert(func.name_hash(), size);
+            }
+            None => {
+                // If we are a shared library, that is required
+                if self.config.shared {
+                    return Err(LinkError::MissingInitFunctionError);
+                }
+            }
+        }
+        // Add the entry point (if it exists)
+        match &start_function {
+            Some(func) => {
+                let size = func.instruction_count();
+
+                func_hash_map.insert(func.name_hash(), size);
+            }
+            None => {
+                // If we are not a shared library, that is required
+                if !self.config.shared {
+                    return Err(LinkError::MissingEntryPointError(
+                        self.config.entry_point.to_owned(),
+                    ));
+                }
+            }
+        }
+        // Loop through each function and find it's offset
+        for func in master_function_vec.iter() {
+            let size = func.instruction_count();
+
+            func_hash_map.insert(func.name_hash(), size);
+        }
+
+        // Add init first
+        if let Some(mut func) = init_function {
+            for instr in func.drain() {
+                let concrete = Driver::concrete_instr(
+                    instr,
+                    arg_section,
+                    &master_symbol_table,
+                    &master_data_table,
+                    &func_hash_map,
+                    &mut data_hash_map,
+                );
+
+                code_section.add(concrete);
+            }
+        }
+
+        // If we are trying to create an executable, add in the entry point code as well
+        if !self.config.shared {
+            if let Some(mut func) = start_function {
+                for instr in func.drain() {
+                    let concrete = Driver::concrete_instr(
+                        instr,
+                        arg_section,
+                        &master_symbol_table,
+                        &master_data_table,
+                        &func_hash_map,
+                        &mut data_hash_map,
+                    );
+
+                    code_section.add(concrete);
+                }
+            }
+        }
+
+        // Now add the rest of the functions
+        for mut func in master_function_vec {
+            for instr in func.drain() {
+                let concrete = Driver::concrete_instr(
+                    instr,
+                    arg_section,
+                    &master_symbol_table,
+                    &master_data_table,
+                    &func_hash_map,
+                    &mut data_hash_map,
+                );
+
+                code_section.add(concrete);
+            }
+        }
+
+        let init_section =
+            CodeSection::new(kerbalobjects::ksmfile::sections::CodeType::Initialization);
+        let func_section = CodeSection::new(kerbalobjects::ksmfile::sections::CodeType::Function);
+
+        ksm_file.add_code_section(func_section);
+        ksm_file.add_code_section(init_section);
+        ksm_file.add_code_section(code_section);
+
+        let mut debug_entry = DebugEntry::new(1);
+        debug_entry.add(DebugRange::new(2, 4));
+
+        ksm_file.debug_section_mut().add(debug_entry);
+
+        Ok(ksm_file)
     }
 
-    fn size_to_hold(number: usize) -> usize {
-        if number < 0x000000FF {
-            // 1 byte
-            1
-        } else if number < 0x0000FFFF {
-            // 2 bytes
-            2
-        } else if number < 0x00FFFFFF {
-            // 3 bytes
-            3
-        } else if number < 0xFFFFFFFF {
-            // 4 bytes
-            4
-        } else {
-            // Arbitrary
-            5
+    fn concrete_instr(
+        temp: TempInstr,
+        arg_section: &mut ArgumentSection,
+        master_symbol_table: &NameTable<MasterSymbolEntry>,
+        master_data_table: &DataTable,
+        func_hash_map: &HashMap<u64, usize>,
+        data_hash_map: &mut HashMap<u64, usize>,
+    ) -> Instr {
+        match temp {
+            TempInstr::ZeroOp(opcode) => Instr::ZeroOp(opcode),
+            TempInstr::OneOp(opcode, op1) => {
+                let op1_idx = Driver::tempop_to_concrete(
+                    op1,
+                    arg_section,
+                    master_symbol_table,
+                    master_data_table,
+                    func_hash_map,
+                    data_hash_map,
+                );
+
+                Instr::OneOp(opcode, op1_idx)
+            }
+            TempInstr::TwoOp(opcode, op1, op2) => {
+                let op1_idx = Driver::tempop_to_concrete(
+                    op1,
+                    arg_section,
+                    master_symbol_table,
+                    master_data_table,
+                    func_hash_map,
+                    data_hash_map,
+                );
+                let op2_idx = Driver::tempop_to_concrete(
+                    op2,
+                    arg_section,
+                    master_symbol_table,
+                    master_data_table,
+                    func_hash_map,
+                    data_hash_map,
+                );
+
+                Instr::TwoOp(opcode, op1_idx, op2_idx)
+            }
+        }
+    }
+
+    fn tempop_to_concrete(
+        op: TempOperand,
+        arg_section: &mut ArgumentSection,
+        master_symbol_table: &NameTable<MasterSymbolEntry>,
+        master_data_table: &DataTable,
+        func_hash_map: &HashMap<u64, usize>,
+        data_hash_map: &mut HashMap<u64, usize>,
+    ) -> usize {
+        match op {
+            TempOperand::DataHash(hash) => match data_hash_map.get(&hash) {
+                Some(index) => *index,
+                None => {
+                    // We do this nonsense so that only referenced data is included in the final binary
+                    let value = master_data_table.get_by_hash(hash).unwrap();
+                    let index = arg_section.add(value.clone());
+                    data_hash_map.insert(hash, index);
+
+                    index
+                }
+            },
+            TempOperand::SymNameHash(hash) => {
+                let sym = master_symbol_table
+                    .get_by_hash(hash)
+                    .unwrap()
+                    .value()
+                    .internal();
+
+                match sym.sym_type() {
+                    SymType::Func => {
+                        let func_loc = func_hash_map.get(&hash).unwrap();
+
+                        // Construct a new Int32 value that contains the location
+                        let value = KOSValue::Int32(*func_loc as i32);
+
+                        let mut hasher = DefaultHasher::new();
+                        value.hash(&mut hasher);
+                        let data_hash = hasher.finish();
+
+                        match data_hash_map.get(&data_hash) {
+                            Some(index) => *index,
+                            None => {
+                                let index = arg_section.add(value.clone());
+                                data_hash_map.insert(data_hash, index);
+
+                                index
+                            }
+                        }
+                    }
+                    SymType::NoType => {
+                        // SAFETY: As usual, we add 1 so it is safe
+                        let index = unsafe { NonZeroUsize::new_unchecked(sym.value_idx() + 1) };
+
+                        let data_hash = master_data_table.hash_at(index).unwrap();
+
+                        match data_hash_map.get(&data_hash) {
+                            Some(index) => *index,
+                            None => {
+                                let value = master_data_table.get_at(index).unwrap();
+                                let index = arg_section.add(value.clone());
+                                data_hash_map.insert(*data_hash, index);
+
+                                index
+                            }
+                        }
+                    }
+                    _ => unreachable!("Symbol type is not of NoType or Func"),
+                }
+            }
         }
     }
 
@@ -194,16 +446,25 @@ impl Driver {
                     if other_symbol.value().internal().sym_bind() == SymBind::Extern {
                         // If this new symbol is _not_ external
                         if symbol.internal().sym_bind() != SymBind::Extern {
-                            let data_index = unsafe {
-                                NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
-                            };
-                            let data = object_data.data_table.get_at(data_index).unwrap();
+                            let new_data_idx;
 
-                            let (_, new_data_idx) = master_data_table.add(data.clone());
+                            if symbol.internal().sym_type() != SymType::Func {
+                                let data_index = unsafe {
+                                    NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
+                                };
+                                let data = object_data.data_table.get_at(data_index).unwrap();
+
+                                let (_, non_zero_idx) = master_data_table.add(data.clone());
+
+                                new_data_idx = non_zero_idx.get() - 1;
+                            } else {
+                                // If this is a function, set the data index to 0, it won't be needed
+                                new_data_idx = 0;
+                            }
 
                             let new_symbol = KOSymbol::new(
                                 0,
-                                new_data_idx.get() - 1,
+                                new_data_idx,
                                 symbol.internal().size(),
                                 symbol.internal().sym_bind(),
                                 symbol.internal().sym_type(),
@@ -290,11 +551,37 @@ impl Driver {
                     }
                 }
                 None => {
-                    master_symbol_table.raw_insert(
-                        symbol.name_hash(),
-                        name_entry.clone().into(),
-                        symbol.into(),
+                    let new_data_idx;
+
+                    if symbol.internal().sym_type() != SymType::Func {
+                        let data_index = unsafe {
+                            NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
+                        };
+
+                        let data = object_data.data_table.get_at(data_index).unwrap();
+
+                        let (_, non_zero_idx) = master_data_table.add(data.clone());
+
+                        new_data_idx = non_zero_idx.get() - 1;
+                    } else {
+                        // If this is a function, set the data index to 0, it won't be needed
+                        new_data_idx = 0;
+                    }
+
+                    let new_symbol = KOSymbol::new(
+                        0,
+                        new_data_idx,
+                        symbol.internal().size(),
+                        symbol.internal().sym_bind(),
+                        symbol.internal().sym_type(),
+                        symbol.internal().sh_idx(),
                     );
+
+                    let new_symbol_entry = MasterSymbolEntry::new(new_symbol, symbol.context());
+                    let new_name_entry =
+                        NameTableEntry::from(name_entry.name().to_owned(), new_symbol_entry);
+
+                    master_symbol_table.raw_insert(symbol.name_hash(), new_name_entry);
                 }
             }
         }
@@ -426,7 +713,9 @@ impl Driver {
                 func_name: name.to_owned(),
             };
 
-            function_name_table.insert(name.to_owned(), unsafe { NonZeroUsize::new_unchecked(1) }); // 1 is a placeholder here because there is no file name table to reference
+            function_name_table.insert(NameTableEntry::from(name.to_owned(), unsafe {
+                NonZeroUsize::new_unchecked(1)
+            })); // 1 is a placeholder here because there is no file name table to reference
 
             hasher = DefaultHasher::new();
             hasher.write(name.as_bytes());
@@ -558,7 +847,7 @@ impl Driver {
 
                 let new_symbol = KOSymbol::new(
                     symbol.name_idx(),
-                    new_data_entry.1.get(),
+                    new_data_entry.1.get() - 1,
                     symbol.size(),
                     symbol.sym_bind(),
                     symbol.sym_type(),
@@ -568,7 +857,7 @@ impl Driver {
                 let symbol_entry = SymbolEntry::new(name_hash, new_symbol, file_name_hash);
 
                 let table_index = symbol_table.add(symbol_entry);
-                symbol_name_table.insert(name.to_owned(), table_index);
+                symbol_name_table.insert(NameTableEntry::from(name.to_owned(), table_index));
             }
         }
 
@@ -631,7 +920,7 @@ impl Driver {
 
                         symbol = KOSymbol::new(
                             symbol.name_idx(),
-                            new_data_entry.1.get(),
+                            new_data_entry.1.get() - 1,
                             symbol.size(),
                             symbol.sym_bind(),
                             symbol.sym_type(),
@@ -646,7 +935,7 @@ impl Driver {
                     let symbol_entry = SymbolEntry::new(name_hash, symbol, func_name_hash);
 
                     let table_index = symbol_table.add(symbol_entry);
-                    symbol_name_table.insert(name.to_owned(), table_index);
+                    symbol_name_table.insert(NameTableEntry::from(name.to_owned(), table_index));
 
                     referenced_symbol_map.insert(sym_idx, table_index);
 

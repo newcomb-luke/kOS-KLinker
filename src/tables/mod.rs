@@ -101,6 +101,14 @@ impl Function {
     pub fn instructions(&self) -> Iter<TempInstr> {
         self.instructions.iter()
     }
+
+    pub fn drain(&mut self) -> Vec<TempInstr> {
+        self.instructions.drain(..).collect()
+    }
+
+    pub fn instruction_count(&self) -> usize {
+        self.instructions.len()
+    }
 }
 
 impl FunctionTable {
@@ -116,6 +124,10 @@ impl FunctionTable {
 
     pub fn functions(&self) -> Iter<Function> {
         self.entries.iter()
+    }
+
+    pub fn drain(&mut self) -> Vec<Function> {
+        self.entries.drain(..).collect()
     }
 }
 
@@ -205,7 +217,7 @@ impl DataTable {
 
         (
             hash,
-            match self.hashes.binary_search(&hash).ok() {
+            match self.hashes.iter().position(|item| *item == hash) {
                 // SAFETY: This is safe because we add 1 to it unconditionally
                 Some(pos) => unsafe { NonZeroUsize::new_unchecked(pos + 1) },
                 None => {
@@ -222,8 +234,23 @@ impl DataTable {
         self.data.get(index.get() - 1)
     }
 
+    pub fn get_by_hash(&self, hash: u64) -> Option<&KOSValue> {
+        match self.hashes.iter().position(|item| item == &hash) {
+            Some(pos) => self.data.get(pos),
+            None => None,
+        }
+    }
+
+    pub fn hash_at(&self, index: NonZeroUsize) -> Option<&u64> {
+        self.hashes.get(index.get() - 1)
+    }
+
     pub fn entries(&self) -> Iter<KOSValue> {
         self.data.iter()
+    }
+
+    pub fn hashes(&self) -> Iter<u64> {
+        self.hashes.iter()
     }
 
     pub fn size_bytes(&self) -> usize {

@@ -71,12 +71,10 @@ impl<T> NameTable<T> {
         Ok(())
     }
 
-    pub fn raw_insert(&mut self, hash: u64, name: String, value: T) -> NonZeroUsize {
+    pub fn raw_insert(&mut self, hash: u64, entry: NameTableEntry<T>) -> NonZeroUsize {
         match self.position_by_hash(hash) {
             Some(pos) => pos,
             None => {
-                let entry = NameTableEntry::from(name, value);
-
                 self.hashes.push(hash);
                 self.entries.push(entry);
                 self.size += 1;
@@ -87,15 +85,14 @@ impl<T> NameTable<T> {
         }
     }
 
-    pub fn insert(&mut self, name: String, value: T) -> NonZeroUsize {
-        match self.position(&name) {
+    pub fn insert(&mut self, entry: NameTableEntry<T>) -> NonZeroUsize {
+        match self.position(&entry.name) {
             Some(pos) => pos,
             None => {
                 let mut hasher = DefaultHasher::new();
-                hasher.write(name.as_bytes());
+                hasher.write(entry.name.as_bytes());
 
                 let hash = hasher.finish();
-                let entry = NameTableEntry::from(name, value);
 
                 self.hashes.push(hash);
                 self.entries.push(entry);
@@ -151,8 +148,8 @@ impl<T> NameTable<T> {
         // SAFETY: This is safe because the "real" index always has the value of 1 added to it
         unsafe {
             self.hashes
-                .binary_search(&hash)
-                .ok()
+                .iter()
+                .position(|item| *item == hash)
                 .map(|index| NonZeroUsize::new_unchecked(index + 1))
         }
     }
@@ -171,5 +168,9 @@ impl<T> NameTable<T> {
 
     pub fn entries_mut(&mut self) -> IterMut<NameTableEntry<T>> {
         self.entries.iter_mut()
+    }
+
+    pub fn drain(&mut self) -> Vec<NameTableEntry<T>> {
+        self.entries.drain(..).collect()
     }
 }
