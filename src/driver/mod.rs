@@ -40,7 +40,15 @@ impl Driver {
 
     pub fn add(&mut self, path: &str) {
         let path_string = String::from(path);
-        let handle = thread::spawn(move || Driver::process_file(path_string));
+        let handle = thread::spawn(move || {
+            let (file_name, kofile) = Driver::read_file(path_string)?;
+            Driver::process_file(file_name, kofile)
+        });
+        self.thread_handles.push(handle);
+    }
+
+    pub fn add_file(&mut self, file_name: String, kofile: KOFile) {
+        let handle = thread::spawn(move || Driver::process_file(file_name, kofile));
         self.thread_handles.push(handle);
     }
 
@@ -128,6 +136,15 @@ impl Driver {
             // Add all of the data in this file
             for value in data.data_table.entries() {
                 master_data_table.add(value.clone());
+            }
+        }
+
+        // At this point all of the symbols will have been resolved. Now we should check if there
+        // are any external symbols left (bad!)
+        for symbol_entry in master_symbol_table.entries() {
+            if symbol_entry.value().internal().sym_bind() == SymBind::Extern {
+                let name = symbol_entry.name().to_owned();
+                return Err(LinkError::UnresolvedExternalSymbolError(name));
             }
         }
 
@@ -614,10 +631,11 @@ impl Driver {
         ))
     }
 
-    fn process_file(path: String) -> LinkResult<ObjectData> {
+    fn process_file(file_name: String, kofile: KOFile) -> LinkResult<ObjectData> {
         let mut hasher = DefaultHasher::new();
 
-        let (file_name, kofile) = Driver::read_file(path)?;
+        println!("Processing file: {}", file_name);
+
         hasher.write(file_name.as_bytes());
         let file_name_hash = ContextHash::FileNameHash(hasher.finish());
 
@@ -856,6 +874,11 @@ impl Driver {
 
                 let symbol_entry = SymbolEntry::new(name_hash, new_symbol, file_name_hash);
 
+                println!(
+                    "Added new non-referenced global symbol: {} {:#?}",
+                    name, new_symbol
+                );
+
                 let table_index = symbol_table.add(symbol_entry);
                 symbol_name_table.insert(NameTableEntry::from(name.to_owned(), table_index));
             }
@@ -905,6 +928,11 @@ impl Driver {
                                 func_error_context.clone(),
                                 ProcessingError::MissingSymbolNameError(sym_idx, symbol.name_idx()),
                             ))?;
+
+                    println!(
+                        "Adding symbol not previously referenced: {} {:#?}",
+                        name, symbol
+                    );
 
                     if symbol.sym_type() == SymType::NoType && symbol.sym_bind() != SymBind::Extern
                     {

@@ -24,6 +24,7 @@ pub enum LinkError {
     DataIndexOverflowError,
     MissingEntryPointError(String),
     MissingInitFunctionError,
+    UnresolvedExternalSymbolError(String),
 }
 
 #[derive(Debug)]
@@ -111,6 +112,13 @@ impl Display for LinkError {
             }
             LinkError::MissingInitFunctionError => {
                 write!(f, "Cannot create shared object, missing _init function.")
+            }
+            LinkError::UnresolvedExternalSymbolError(name) => {
+                write!(
+                    f,
+                    "Unresolved external symbol error. External symbol \"{}\" has no definition",
+                    name
+                )
             }
         }
     }
