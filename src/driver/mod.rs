@@ -634,8 +634,6 @@ impl Driver {
     fn process_file(file_name: String, kofile: KOFile) -> LinkResult<ObjectData> {
         let mut hasher = DefaultHasher::new();
 
-        println!("Processing file: {}", file_name);
-
         hasher.write(file_name.as_bytes());
         let file_name_hash = ContextHash::FileNameHash(hasher.finish());
 
@@ -874,11 +872,6 @@ impl Driver {
 
                 let symbol_entry = SymbolEntry::new(name_hash, new_symbol, file_name_hash);
 
-                println!(
-                    "Added new non-referenced global symbol: {} {:#?}",
-                    name, new_symbol
-                );
-
                 let table_index = symbol_table.add(symbol_entry);
                 symbol_name_table.insert(NameTableEntry::from(name.to_owned(), table_index));
             }
@@ -928,11 +921,6 @@ impl Driver {
                                 func_error_context.clone(),
                                 ProcessingError::MissingSymbolNameError(sym_idx, symbol.name_idx()),
                             ))?;
-
-                    println!(
-                        "Adding symbol not previously referenced: {} {:#?}",
-                        name, symbol
-                    );
 
                     if symbol.sym_type() == SymType::NoType && symbol.sym_bind() != SymBind::Extern
                     {
