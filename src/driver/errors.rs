@@ -25,6 +25,7 @@ pub enum LinkError {
     MissingEntryPointError(String),
     MissingInitFunctionError,
     UnresolvedExternalSymbolError(String),
+    InvalidSymbolRefError(String, usize, u64),
 }
 
 #[derive(Debug)]
@@ -35,6 +36,8 @@ pub enum ProcessingError {
     MissingSymbolNameError(usize, usize),
     InvalidSymbolDataIndexError(String, usize),
     DuplicateSymbolError(String, String),
+    FuncMissingSymbolError,
+    FuncSymbolInvalidTypeError,
 }
 
 impl Error for LinkError {}
@@ -120,6 +123,13 @@ impl Display for LinkError {
                     name
                 )
             }
+            LinkError::InvalidSymbolRefError(name, instr_index, sym_hash) => {
+                write!(
+                    f,
+                    "Error in {}:\nInstruction at index {} references invalid symbol, hash: {}",
+                    name, instr_index, sym_hash
+                )
+            }
         }
     }
 }
@@ -164,6 +174,12 @@ impl Display for ProcessingError {
                     "Multiple definitions of '{}', first defined in {}",
                     symbol_name, original_file
                 )
+            }
+            ProcessingError::FuncMissingSymbolError => {
+                write!(f, "Function missing associated symbol table entry")
+            }
+            ProcessingError::FuncSymbolInvalidTypeError => {
+                write!(f, "Function symbol has invalid type, a symbol entry with the same name as a function must be of SymType::Func")
             }
         }
     }

@@ -1,7 +1,8 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::slice::Iter;
+use std::slice::{Iter, IterMut};
 use std::vec::Drain;
 
 use kerbalobjects::{kofile::symbols::KOSymbol, KOSValue, Opcode};
@@ -38,11 +39,18 @@ pub struct ObjectData {
     pub function_table: FunctionTable,
     pub symbol_table: SymbolTable,
     pub data_table: DataTable,
+    pub local_function_table: FunctionTable,
+    pub local_symbol_table: SymbolTable,
+    pub local_function_hash_map: HashMap<u64, usize>,
+    pub local_function_name_table: NameTable<NonZeroUsize>,
+    pub local_function_ref_vec: Vec<u64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function {
+    object_data_index: usize,
     name_hash: u64,
+    is_global: bool,
     instructions: Vec<TempInstr>,
 }
 
@@ -76,22 +84,30 @@ pub struct DataTable {
 }
 
 impl Function {
-    pub fn new(name_hash: u64) -> Self {
+    pub fn new(name_hash: u64, is_global: bool) -> Self {
         Function {
+            object_data_index: 0,
             name_hash,
+            is_global,
             instructions: Vec::new(),
         }
     }
 
-    pub fn with_capacity(name_hash: u64, capacity: usize) -> Self {
+    pub fn with_capacity(name_hash: u64, is_global: bool, capacity: usize) -> Self {
         Function {
+            object_data_index: 0,
             name_hash,
+            is_global,
             instructions: Vec::with_capacity(capacity),
         }
     }
 
     pub fn name_hash(&self) -> u64 {
         self.name_hash
+    }
+
+    pub fn is_global(&self) -> bool {
+        self.is_global
     }
 
     pub fn add(&mut self, instr: TempInstr) {
@@ -108,6 +124,14 @@ impl Function {
 
     pub fn instruction_count(&self) -> usize {
         self.instructions.len()
+    }
+
+    pub fn set_object_data_index(&mut self, index: usize) {
+        self.object_data_index = index;
+    }
+
+    pub fn object_data_index(&self) -> usize {
+        self.object_data_index
     }
 }
 
@@ -126,8 +150,16 @@ impl FunctionTable {
         self.entries.iter()
     }
 
+    pub fn functions_mut(&mut self) -> IterMut<Function> {
+        self.entries.iter_mut()
+    }
+
     pub fn drain(&mut self) -> Vec<Function> {
         self.entries.drain(..).collect()
+    }
+
+    pub fn get_by_hash(&self, hash: u64) -> Option<&Function> {
+        self.entries.iter().find(|func| func.name_hash == hash)
     }
 }
 
@@ -148,12 +180,22 @@ impl SymbolEntry {
         &self.symbol
     }
 
+    pub fn internal_mut(&mut self) -> &mut KOSymbol {
+        &mut self.symbol
+    }
+
     pub fn context(&self) -> ContextHash {
         self.ctx
     }
 
     pub fn set_context(&mut self, new: ContextHash) {
         self.ctx = new;
+    }
+}
+
+impl From<SymbolEntry> for KOSymbol {
+    fn from(entry: SymbolEntry) -> Self {
+        entry.symbol
     }
 }
 
@@ -164,6 +206,10 @@ impl MasterSymbolEntry {
 
     pub fn internal(&self) -> &KOSymbol {
         &self.symbol
+    }
+
+    pub fn internal_mut(&mut self) -> &mut KOSymbol {
+        &mut self.symbol
     }
 
     pub fn context(&self) -> ContextHash {
@@ -200,6 +246,10 @@ impl SymbolTable {
 
     pub fn drain(&mut self) -> Drain<SymbolEntry> {
         self.entries.drain(..)
+    }
+
+    pub fn get_by_hash(&self, hash: u64) -> Option<&SymbolEntry> {
+        self.entries.iter().find(|sym| sym.name_hash == hash)
     }
 }
 impl DataTable {

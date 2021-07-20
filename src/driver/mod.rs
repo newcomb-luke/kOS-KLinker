@@ -1,25 +1,24 @@
 use crate::driver::errors::{LinkError, ProcessingError};
 use crate::tables::{
-    ContextHash, DataTable, Function, FunctionTable, MasterSymbolEntry, NameTable, NameTableEntry,
-    ObjectData, SymbolEntry, SymbolTable, TempInstr, TempOperand,
+    ContextHash, DataTable, Function, MasterSymbolEntry, NameTable, NameTableEntry, ObjectData,
+    SymbolTable, TempInstr, TempOperand,
 };
 use crate::CLIConfig;
 use errors::LinkResult;
-use kerbalobjects::kofile::sections::{ReldSection, SectionIndex};
-use kerbalobjects::kofile::symbols::{KOSymbol, SymBind, SymType};
+use kerbalobjects::kofile::symbols::{SymBind, SymType};
 use kerbalobjects::kofile::KOFile;
 use kerbalobjects::ksmfile::sections::{ArgumentSection, CodeSection, DebugEntry, DebugRange};
 use kerbalobjects::ksmfile::{Instr, KSMFile};
-use kerbalobjects::{FromBytes, KOSValue};
+use kerbalobjects::KOSValue;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
-use std::io::Read;
 use std::num::NonZeroUsize;
 use std::panic;
-use std::path::Path;
 use std::thread::{self, JoinHandle};
+
+pub mod reader;
+use reader::Reader;
 
 use self::errors::{FileErrorContext, FuncErrorContext};
 
@@ -41,14 +40,14 @@ impl Driver {
     pub fn add(&mut self, path: &str) {
         let path_string = String::from(path);
         let handle = thread::spawn(move || {
-            let (file_name, kofile) = Driver::read_file(path_string)?;
-            Driver::process_file(file_name, kofile)
+            let (file_name, kofile) = Reader::read_file(path_string)?;
+            Reader::process_file(file_name, kofile)
         });
         self.thread_handles.push(handle);
     }
 
     pub fn add_file(&mut self, file_name: String, kofile: KOFile) {
-        let handle = thread::spawn(move || Driver::process_file(file_name, kofile));
+        let handle = thread::spawn(move || Reader::process_file(file_name, kofile));
         self.thread_handles.push(handle);
     }
 
@@ -94,6 +93,8 @@ impl Driver {
         let mut file_name_table = NameTable::<()>::new();
         let mut master_comment: Option<String> = None;
 
+        let mut temporary_function_vec = Vec::new();
+
         let mut ksm_file = KSMFile::new();
         let arg_section = ksm_file.arg_section_mut();
         // We only have one single code section that contains all executable instructions
@@ -104,10 +105,12 @@ impl Driver {
         // Maps function name hashes to absolute instruction indexes
         let mut func_hash_map = HashMap::<u64, usize>::new();
         // Keeps track of all of the functions that are referenced
-        let mut func_ref_vec = Vec::new();
+        let mut func_ref_vec: Vec<u64> = Vec::new();
+        // Variable to keep track of the current absolute index of each function
+        let mut func_offset = 0;
 
         // Resolve all symbols
-        for data in object_data.iter_mut() {
+        for (object_data_index, data) in object_data.iter_mut().enumerate() {
             let mut hasher = DefaultHasher::new();
             hasher.write(data.input_file_name.as_bytes());
             let file_name_hash = ContextHash::FileNameHash(hasher.finish());
@@ -121,12 +124,19 @@ impl Driver {
                 master_function_name_table.insert(func_entry);
             }
 
+            // Set all function object data indexes
+            for func in data.function_table.functions_mut() {
+                func.set_object_data_index(object_data_index);
+            }
+            for func in data.local_function_table.functions_mut() {
+                func.set_object_data_index(object_data_index);
+            }
+
             // Resolve all symbols in this file
             Driver::resolve_symbols(
                 &mut master_symbol_table,
                 &mut master_data_table,
                 &master_function_name_table,
-                &file_name_table,
                 file_name_hash,
                 data,
                 &mut master_comment,
@@ -148,59 +158,79 @@ impl Driver {
             }
         }
 
-        // This really sucks. But it is the only way to know if a function is actually used
-        // TODO: Fix this somehow?
-        for data in object_data.iter() {
-            for func in data.function_table.functions() {
-                for instr in func.instructions() {
-                    match instr {
-                        TempInstr::ZeroOp(_) => {}
-                        TempInstr::OneOp(_, op1) => {
-                            // If it is a symbol reference
-                            if let TempOperand::SymNameHash(hash) = op1 {
-                                // If it exists (it will at this point)
-                                if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
-                                    // If it is a function
-                                    if sym.value().internal().sym_type() == SymType::Func {
-                                        // Then that function was referenced
-                                        func_ref_vec.push(*hash);
-                                    }
-                                }
-                            }
-                        }
-                        TempInstr::TwoOp(_, op1, op2) => {
-                            if let TempOperand::SymNameHash(hash) = op1 {
-                                if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
-                                    if sym.value().internal().sym_type() == SymType::Func {
-                                        func_ref_vec.push(*hash);
-                                    }
-                                }
-                            }
-                            if let TempOperand::SymNameHash(hash) = op2 {
-                                if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
-                                    if sym.value().internal().sym_type() == SymType::Func {
-                                        func_ref_vec.push(*hash);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Now add all of the functions that are referenced
-        for mut data in object_data {
+        // Loop through all global functions
+        for data in object_data.iter_mut() {
             for func in data.function_table.drain() {
                 if func.name_hash() == init_hash {
                     init_function = Some(func);
                 } else if func.name_hash() == entry_point_hash {
                     start_function = Some(func);
                 } else {
-                    // If it isn't special, check the reference list
-                    if func_ref_vec.contains(&func.name_hash()) {
-                        master_function_vec.push(func);
-                    }
+                    temporary_function_vec.push(func);
+                }
+            }
+        }
+
+        // Add _init and _start to the top if they exist
+        if let Some(init_func) = &init_function {
+            temporary_function_vec.insert(0, init_func.clone());
+            func_ref_vec.push(init_func.name_hash());
+        } else {
+            // If we are a shared library, that is required
+            if self.config.shared {
+                return Err(LinkError::MissingInitFunctionError);
+            }
+        }
+
+        if let Some(start_func) = &start_function {
+            temporary_function_vec.insert(0, start_func.clone());
+            func_ref_vec.push(start_func.name_hash());
+        } else {
+            // If we are not a shared library, that is required
+            if !self.config.shared {
+                return Err(LinkError::MissingEntryPointError(
+                    self.config.entry_point.to_owned(),
+                ));
+            }
+        }
+
+        // The two "root" functions for optimization are _init and _start
+        if let Some(init_func) = &init_function {
+            Driver::add_func_refs_optimize(
+                init_func.name_hash(),
+                true,
+                &mut func_ref_vec,
+                init_func.object_data_index(),
+                &mut object_data,
+                &master_symbol_table,
+                &temporary_function_vec,
+            );
+        }
+
+        if let Some(start_func) = &start_function {
+            Driver::add_func_refs_optimize(
+                start_func.name_hash(),
+                true,
+                &mut func_ref_vec,
+                start_func.object_data_index(),
+                &mut object_data,
+                &master_symbol_table,
+                &temporary_function_vec,
+            );
+        }
+
+        // Now add all of the functions that are referenced
+        for data in object_data.iter_mut() {
+            for func in temporary_function_vec.drain(..) {
+                // Check the reference list
+                if func_ref_vec.contains(&func.name_hash()) {
+                    master_function_vec.push(func);
+                }
+            }
+
+            for func in data.local_function_table.drain() {
+                if data.local_function_ref_vec.contains(&func.name_hash()) {
+                    master_function_vec.push(func);
                 }
             }
         }
@@ -211,91 +241,30 @@ impl Driver {
             arg_section.add(value);
         }
 
-        // Add the init function (if it exists)
-        match &init_function {
-            Some(func) => {
-                let size = func.instruction_count();
-
-                func_hash_map.insert(func.name_hash(), size);
-            }
-            None => {
-                // If we are a shared library, that is required
-                if self.config.shared {
-                    return Err(LinkError::MissingInitFunctionError);
-                }
-            }
-        }
-        // Add the entry point (if it exists)
-        match &start_function {
-            Some(func) => {
-                let size = func.instruction_count();
-
-                func_hash_map.insert(func.name_hash(), size);
-            }
-            None => {
-                // If we are not a shared library, that is required
-                if !self.config.shared {
-                    return Err(LinkError::MissingEntryPointError(
-                        self.config.entry_point.to_owned(),
-                    ));
-                }
-            }
-        }
         // Loop through each function and find it's offset
         for func in master_function_vec.iter() {
-            let size = func.instruction_count();
-
-            func_hash_map.insert(func.name_hash(), size);
+            func_offset = Driver::calc_func_offset(
+                func,
+                object_data.get_mut(func.object_data_index()).unwrap(),
+                &mut func_hash_map,
+                func_offset,
+            );
         }
 
-        // Add init first
-        if let Some(mut func) = init_function {
-            for instr in func.drain() {
-                let concrete = Driver::concrete_instr(
-                    instr,
-                    arg_section,
-                    &master_symbol_table,
-                    &master_data_table,
-                    &func_hash_map,
-                    &mut data_hash_map,
-                );
-
-                code_section.add(concrete);
-            }
-        }
-
-        // If we are trying to create an executable, add in the entry point code as well
-        if !self.config.shared {
-            if let Some(mut func) = start_function {
-                for instr in func.drain() {
-                    let concrete = Driver::concrete_instr(
-                        instr,
-                        arg_section,
-                        &master_symbol_table,
-                        &master_data_table,
-                        &func_hash_map,
-                        &mut data_hash_map,
-                    );
-
-                    code_section.add(concrete);
-                }
-            }
-        }
-
-        // Now add the rest of the functions
+        // Now add the functions to the binary
         for mut func in master_function_vec {
-            for instr in func.drain() {
-                let concrete = Driver::concrete_instr(
-                    instr,
-                    arg_section,
-                    &master_symbol_table,
-                    &master_data_table,
-                    &func_hash_map,
-                    &mut data_hash_map,
-                );
-
-                code_section.add(concrete);
-            }
+            let object_data_index = func.object_data_index();
+            Driver::add_func_to_code_section(
+                &mut func,
+                arg_section,
+                &mut code_section,
+                &master_symbol_table,
+                &master_data_table,
+                &master_function_name_table,
+                &func_hash_map,
+                &mut data_hash_map,
+                &object_data.get(object_data_index).unwrap(),
+            )?;
         }
 
         let init_section =
@@ -314,16 +283,239 @@ impl Driver {
         Ok(ksm_file)
     }
 
+    fn add_func_to_code_section(
+        func: &mut Function,
+        arg_section: &mut ArgumentSection,
+        code_section: &mut CodeSection,
+        master_symbol_table: &NameTable<MasterSymbolEntry>,
+        master_data_table: &DataTable,
+        master_function_name_table: &NameTable<NonZeroUsize>,
+        func_hash_map: &HashMap<u64, usize>,
+        data_hash_map: &mut HashMap<u64, usize>,
+        object_data: &ObjectData,
+    ) -> LinkResult<()> {
+        let mut instr_index = 0;
+
+        for instr in func.drain() {
+            let concrete = Driver::concrete_instr(
+                instr,
+                arg_section,
+                master_symbol_table,
+                master_data_table,
+                master_function_name_table,
+                func_hash_map,
+                data_hash_map,
+                object_data,
+                func.name_hash(),
+                instr_index,
+            )?;
+            instr_index += 1;
+
+            code_section.add(concrete);
+        }
+
+        Ok(())
+    }
+
+    fn func_hash_from_op(
+        op: &TempOperand,
+        master_symbol_table: &NameTable<MasterSymbolEntry>,
+        local_symbol_table: &SymbolTable,
+    ) -> Option<(bool, u64)> {
+        // If it is a symbol reference
+        if let TempOperand::SymNameHash(hash) = op {
+            // Local symbols have higher priority
+            if let Some(sym) = local_symbol_table.get_by_hash(*hash) {
+                // If it is a function
+                if sym.internal().sym_type() == SymType::Func {
+                    // The boolean represents if it was a global symbol
+                    Some((false, *hash))
+                } else {
+                    None
+                }
+            } else if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
+                if sym.value().internal().sym_type() == SymType::Func {
+                    Some((true, *hash))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn add_func_ref_from_op(
+        op: &TempOperand,
+        func_ref_vec: &mut Vec<u64>,
+        parent_object_data_index: usize,
+        object_data: &mut Vec<ObjectData>,
+        master_symbol_table: &NameTable<MasterSymbolEntry>,
+        temporary_function_vec: &Vec<Function>,
+    ) {
+        if let Some((is_global, hash)) = Driver::func_hash_from_op(
+            op,
+            master_symbol_table,
+            &object_data
+                .get(parent_object_data_index)
+                .unwrap()
+                .local_symbol_table,
+        ) {
+            let referenced_func_opt = {
+                if is_global {
+                    if !func_ref_vec.contains(&hash) {
+                        func_ref_vec.push(hash);
+
+                        println!("{:#?}", object_data.get(parent_object_data_index).unwrap());
+
+                        println!("Trying to add referenced function with hash {}", hash);
+
+                        let referenced_func = temporary_function_vec
+                            .iter()
+                            .find(|func| func.name_hash() == hash)
+                            .unwrap();
+
+                        let referenced_func_name_hash = referenced_func.name_hash();
+                        let func_object_data_index = referenced_func.object_data_index();
+
+                        Some((referenced_func_name_hash, func_object_data_index))
+                    } else {
+                        None
+                    }
+                } else {
+                    let parent_object_data = object_data.get_mut(parent_object_data_index).unwrap();
+
+                    if !parent_object_data.local_function_ref_vec.contains(&hash) {
+                        parent_object_data.local_function_ref_vec.push(hash);
+
+                        let referenced_func = object_data
+                            .get(parent_object_data_index)
+                            .unwrap()
+                            .local_function_table
+                            .get_by_hash(hash)
+                            .unwrap();
+
+                        let referenced_func_name_hash = referenced_func.name_hash();
+                        let func_object_data_index = referenced_func.object_data_index();
+
+                        Some((referenced_func_name_hash, func_object_data_index))
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some((referenced_name_hash, referenced_object_data_index)) = referenced_func_opt
+            {
+                // Recurse.
+                Driver::add_func_refs_optimize(
+                    referenced_name_hash,
+                    is_global,
+                    func_ref_vec,
+                    referenced_object_data_index,
+                    object_data,
+                    master_symbol_table,
+                    temporary_function_vec,
+                );
+            }
+        }
+    }
+
+    fn add_func_refs_optimize(
+        func_name_hash: u64,
+        func_is_global: bool,
+        func_ref_vec: &mut Vec<u64>,
+        object_data_index: usize,
+        object_data: &mut Vec<ObjectData>,
+        master_symbol_table: &NameTable<MasterSymbolEntry>,
+        temporary_function_vec: &Vec<Function>,
+    ) {
+        let mut op_vec = Vec::with_capacity(16);
+        let parent_func = if func_is_global {
+            temporary_function_vec
+                .iter()
+                .find(|func| func.name_hash() == func_name_hash)
+                .unwrap()
+        } else {
+            object_data
+                .get(object_data_index)
+                .unwrap()
+                .local_function_table
+                .get_by_hash(func_name_hash)
+                .unwrap()
+        };
+
+        for instr in parent_func.instructions() {
+            match instr {
+                TempInstr::ZeroOp(_) => {}
+                TempInstr::OneOp(_, op1) => {
+                    op_vec.push(*op1);
+                }
+                TempInstr::TwoOp(_, op1, op2) => {
+                    op_vec.push(*op1);
+                    op_vec.push(*op2);
+                }
+            }
+        }
+
+        for op in op_vec {
+            Driver::add_func_ref_from_op(
+                &op,
+                func_ref_vec,
+                object_data_index,
+                object_data,
+                master_symbol_table,
+                temporary_function_vec,
+            );
+        }
+    }
+
+    fn calc_func_offset(
+        func: &Function,
+        object_data: &mut ObjectData,
+        func_hash_map: &mut HashMap<u64, usize>,
+        current_offset: usize,
+    ) -> usize {
+        let size = func.instruction_count();
+
+        if func.is_global() {
+            func_hash_map.insert(func.name_hash(), current_offset);
+        } else {
+            object_data
+                .local_function_hash_map
+                .insert(func.name_hash(), current_offset);
+        }
+
+        current_offset + size
+    }
+
     fn concrete_instr(
         temp: TempInstr,
         arg_section: &mut ArgumentSection,
         master_symbol_table: &NameTable<MasterSymbolEntry>,
         master_data_table: &DataTable,
+        master_function_name_table: &NameTable<NonZeroUsize>,
         func_hash_map: &HashMap<u64, usize>,
         data_hash_map: &mut HashMap<u64, usize>,
-    ) -> Instr {
+        object_data: &ObjectData,
+        func_name_hash: u64,
+        instr_index: usize,
+    ) -> LinkResult<Instr> {
+        let func_name = match object_data
+            .local_function_name_table
+            .get_by_hash(func_name_hash)
+        {
+            Some(func) => func.name(),
+            None => master_function_name_table
+                .get_by_hash(func_name_hash)
+                .unwrap()
+                .name(),
+        };
+
         match temp {
-            TempInstr::ZeroOp(opcode) => Instr::ZeroOp(opcode),
+            TempInstr::ZeroOp(opcode) => Ok(Instr::ZeroOp(opcode)),
             TempInstr::OneOp(opcode, op1) => {
                 let op1_idx = Driver::tempop_to_concrete(
                     op1,
@@ -332,9 +524,12 @@ impl Driver {
                     master_data_table,
                     func_hash_map,
                     data_hash_map,
-                );
+                    object_data,
+                    func_name,
+                    instr_index,
+                )?;
 
-                Instr::OneOp(opcode, op1_idx)
+                Ok(Instr::OneOp(opcode, op1_idx))
             }
             TempInstr::TwoOp(opcode, op1, op2) => {
                 let op1_idx = Driver::tempop_to_concrete(
@@ -344,7 +539,10 @@ impl Driver {
                     master_data_table,
                     func_hash_map,
                     data_hash_map,
-                );
+                    object_data,
+                    func_name,
+                    instr_index,
+                )?;
                 let op2_idx = Driver::tempop_to_concrete(
                     op2,
                     arg_section,
@@ -352,9 +550,12 @@ impl Driver {
                     master_data_table,
                     func_hash_map,
                     data_hash_map,
-                );
+                    object_data,
+                    func_name,
+                    instr_index,
+                )?;
 
-                Instr::TwoOp(opcode, op1_idx, op2_idx)
+                Ok(Instr::TwoOp(opcode, op1_idx, op2_idx))
             }
         }
     }
@@ -366,44 +567,59 @@ impl Driver {
         master_data_table: &DataTable,
         func_hash_map: &HashMap<u64, usize>,
         data_hash_map: &mut HashMap<u64, usize>,
-    ) -> usize {
+        object_data: &ObjectData,
+        func_name: &String,
+        instr_index: usize,
+    ) -> LinkResult<usize> {
         match op {
             TempOperand::DataHash(hash) => match data_hash_map.get(&hash) {
-                Some(index) => *index,
+                Some(index) => Ok(*index),
                 None => {
                     // We do this nonsense so that only referenced data is included in the final binary
                     let value = master_data_table.get_by_hash(hash).unwrap();
                     let index = arg_section.add(value.clone());
                     data_hash_map.insert(hash, index);
 
-                    index
+                    Ok(index)
                 }
             },
             TempOperand::SymNameHash(hash) => {
-                let sym = master_symbol_table
-                    .get_by_hash(hash)
-                    .unwrap()
-                    .value()
-                    .internal();
+                let sym = match object_data.local_symbol_table.get_by_hash(hash) {
+                    Some(local_sym) => local_sym.internal(),
+                    None => match master_symbol_table.get_by_hash(hash) {
+                        Some(entry) => entry.value().internal(),
+                        None => {
+                            return Err(LinkError::InvalidSymbolRefError(
+                                func_name.to_owned(),
+                                instr_index,
+                                hash,
+                            ));
+                        }
+                    },
+                };
 
                 match sym.sym_type() {
                     SymType::Func => {
-                        let func_loc = func_hash_map.get(&hash).unwrap();
+                        let func_loc = if sym.sym_bind() == SymBind::Global {
+                            func_hash_map.get(&hash).unwrap()
+                        } else {
+                            object_data.local_function_hash_map.get(&hash).unwrap()
+                        };
 
-                        // Construct a new Int32 value that contains the location
-                        let value = KOSValue::Int32(*func_loc as i32);
+                        // Construct a new String that contains the destination label
+                        let value = KOSValue::String(format!("@{:0>4}", *func_loc));
 
                         let mut hasher = DefaultHasher::new();
                         value.hash(&mut hasher);
                         let data_hash = hasher.finish();
 
                         match data_hash_map.get(&data_hash) {
-                            Some(index) => *index,
+                            Some(index) => Ok(*index),
                             None => {
                                 let index = arg_section.add(value.clone());
                                 data_hash_map.insert(data_hash, index);
 
-                                index
+                                Ok(index)
                             }
                         }
                     }
@@ -414,13 +630,13 @@ impl Driver {
                         let data_hash = master_data_table.hash_at(index).unwrap();
 
                         match data_hash_map.get(&data_hash) {
-                            Some(index) => *index,
+                            Some(index) => Ok(*index),
                             None => {
                                 let value = master_data_table.get_at(index).unwrap();
                                 let index = arg_section.add(value.clone());
                                 data_hash_map.insert(*data_hash, index);
 
-                                index
+                                Ok(index)
                             }
                         }
                     }
@@ -434,7 +650,6 @@ impl Driver {
         master_symbol_table: &mut NameTable<MasterSymbolEntry>,
         master_data_table: &mut DataTable,
         master_function_name_table: &NameTable<NonZeroUsize>,
-        file_name_table: &NameTable<()>,
         file_name_hash: ContextHash,
         object_data: &mut ObjectData,
         comment: &mut Option<String>,
@@ -446,589 +661,145 @@ impl Driver {
                 .get_by_hash(symbol.name_hash())
                 .unwrap();
 
-            // If it is a function symbol
-            if symbol.internal().sym_type() == SymType::Func {
-                // Set the context to be correct
-                symbol.set_context(file_name_hash);
+            // If it is not a local symbol
+            if symbol.internal().sym_bind() != SymBind::Local {
+                // If it is a function symbol
+                if symbol.internal().sym_type() == SymType::Func {
+                    // Set the context to be correct
+                    symbol.set_context(file_name_hash);
 
-                // If it is the entry point, try to set the comment
-                if entry_point_hash == symbol.name_hash() {
-                    *comment = object_data.comment.clone();
-                }
-            }
-
-            match master_symbol_table.get_by_hash(symbol.name_hash()) {
-                Some(other_symbol) => {
-                    // If the found symbol is external
-                    if other_symbol.value().internal().sym_bind() == SymBind::Extern {
-                        // If this new symbol is _not_ external
-                        if symbol.internal().sym_bind() != SymBind::Extern {
-                            let new_data_idx;
-
-                            if symbol.internal().sym_type() != SymType::Func {
-                                let data_index = unsafe {
-                                    NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
-                                };
-                                let data = object_data.data_table.get_at(data_index).unwrap();
-
-                                let (_, non_zero_idx) = master_data_table.add(data.clone());
-
-                                new_data_idx = non_zero_idx.get() - 1;
-                            } else {
-                                // If this is a function, set the data index to 0, it won't be needed
-                                new_data_idx = 0;
-                            }
-
-                            let new_symbol = KOSymbol::new(
-                                0,
-                                new_data_idx,
-                                symbol.internal().size(),
-                                symbol.internal().sym_bind(),
-                                symbol.internal().sym_type(),
-                                symbol.internal().sh_idx(),
-                            );
-
-                            let new_symbol_entry =
-                                MasterSymbolEntry::new(new_symbol, symbol.context());
-
-                            // Replace it
-                            master_symbol_table
-                                .replace_by_hash(symbol.name_hash(), new_symbol_entry)
-                                .map_err(|_| {
-                                    LinkError::InternalError(String::from(
-                                        "Symbol name hash invalid.",
-                                    ))
-                                })?;
-                        }
-                        // If it was external, don't do anything
+                    // If it is the entry point, try to set the comment
+                    if entry_point_hash == symbol.name_hash() {
+                        *comment = object_data.comment.clone();
                     }
-                    // If it isn't external
-                    else {
-                        // Check if we are not external
-                        if symbol.internal().sym_bind() != SymBind::Extern {
-                            // Duplicate symbol!
+                }
 
-                            let file_error_context = FileErrorContext {
-                                input_file_name: object_data.input_file_name.to_owned(),
-                                source_file_name: object_data.source_file_name.to_owned(),
-                            };
+                match master_symbol_table.get_by_hash(symbol.name_hash()) {
+                    Some(other_symbol) => {
+                        // If the found symbol is external
+                        if other_symbol.value().internal().sym_bind() == SymBind::Extern {
+                            // If this new symbol is _not_ external
+                            if symbol.internal().sym_bind() != SymBind::Extern {
+                                let new_data_idx;
 
-                            let mut func_error_context = FuncErrorContext {
-                                file_context: file_error_context.clone(),
-                                func_name: String::new(),
-                            };
+                                if symbol.internal().sym_type() != SymType::Func {
+                                    let data_index = unsafe {
+                                        NonZeroUsize::new_unchecked(
+                                            symbol.internal().value_idx() + 1,
+                                        )
+                                    };
+                                    let data = object_data.data_table.get_at(data_index).unwrap();
 
-                            let mut original_func_name = None;
+                                    let (_, non_zero_idx) = master_data_table.add(data.clone());
 
-                            let original_file_name = match other_symbol.value().context() {
-                                ContextHash::FuncNameHash(func_name_hash) => {
+                                    new_data_idx = non_zero_idx.get() - 1;
+                                } else {
+                                    // If this is a function, set the data index to 0, it won't be needed
+                                    new_data_idx = 0;
+                                }
+
+                                symbol.internal_mut().set_value_idx(new_data_idx);
+                                let new_symbol = symbol.internal().clone();
+
+                                let new_symbol_entry =
+                                    MasterSymbolEntry::new(new_symbol, symbol.context());
+
+                                // Replace it
+                                master_symbol_table
+                                    .replace_by_hash(symbol.name_hash(), new_symbol_entry)
+                                    .map_err(|_| {
+                                        LinkError::InternalError(String::from(
+                                            "Symbol name hash invalid.",
+                                        ))
+                                    })?;
+                            }
+                            // If it was external, don't do anything
+                        }
+                        // If it isn't external
+                        else {
+                            // Check if we are not external
+                            if symbol.internal().sym_bind() != SymBind::Extern {
+                                // Duplicate symbol!
+
+                                let file_error_context = FileErrorContext {
+                                    input_file_name: object_data.input_file_name.to_owned(),
+                                    source_file_name: object_data.source_file_name.to_owned(),
+                                };
+
+                                let mut func_error_context = FuncErrorContext {
+                                    file_context: file_error_context.clone(),
+                                    func_name: String::new(),
+                                };
+
+                                let mut original_func_name = None;
+
+                                if let ContextHash::FuncNameHash(func_name_hash) =
+                                    other_symbol.value().context()
+                                {
                                     let original_function_name_entry = master_function_name_table
                                         .get_by_hash(func_name_hash)
                                         .unwrap();
                                     let original_function_name =
                                         original_function_name_entry.name();
-                                    let original_file_name = file_name_table
-                                        .get_at(*original_function_name_entry.value())
-                                        .unwrap()
-                                        .name();
 
                                     original_func_name = Some(original_function_name.to_owned());
-
-                                    original_file_name.to_owned()
                                 }
-                                ContextHash::FileNameHash(file_name_hash) => file_name_table
-                                    .get_by_hash(file_name_hash)
-                                    .unwrap()
-                                    .name()
-                                    .to_owned(),
-                            };
 
-                            return Err(match original_func_name {
-                                Some(name) => {
-                                    func_error_context.func_name = name;
+                                return Err(match original_func_name {
+                                    Some(name) => {
+                                        func_error_context.func_name = name;
 
-                                    LinkError::FuncContextError(
-                                        func_error_context,
+                                        LinkError::FuncContextError(
+                                            func_error_context,
+                                            ProcessingError::DuplicateSymbolError(
+                                                name_entry.name().to_owned(),
+                                                object_data.source_file_name.to_owned(),
+                                            ),
+                                        )
+                                    }
+                                    None => LinkError::FileContextError(
+                                        file_error_context,
                                         ProcessingError::DuplicateSymbolError(
                                             name_entry.name().to_owned(),
-                                            original_file_name,
+                                            object_data.source_file_name.to_owned(),
                                         ),
-                                    )
-                                }
-                                None => LinkError::FileContextError(
-                                    file_error_context,
-                                    ProcessingError::DuplicateSymbolError(
-                                        name_entry.name().to_owned(),
-                                        original_file_name,
                                     ),
-                                ),
-                            });
+                                });
+                            }
+                            // If we are external, then just continue
                         }
-                        // If we are external, then just continue
                     }
-                }
-                None => {
-                    let new_data_idx;
+                    None => {
+                        let new_data_idx;
 
-                    if symbol.internal().sym_type() != SymType::Func {
-                        let data_index = unsafe {
-                            NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
-                        };
+                        if symbol.internal().sym_type() != SymType::Func {
+                            let data_index = unsafe {
+                                NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
+                            };
 
-                        let data = object_data.data_table.get_at(data_index).unwrap();
+                            let data = object_data.data_table.get_at(data_index).unwrap();
 
-                        let (_, non_zero_idx) = master_data_table.add(data.clone());
+                            let (_, non_zero_idx) = master_data_table.add(data.clone());
 
-                        new_data_idx = non_zero_idx.get() - 1;
-                    } else {
-                        // If this is a function, set the data index to 0, it won't be needed
-                        new_data_idx = 0;
+                            new_data_idx = non_zero_idx.get() - 1;
+                        } else {
+                            // If this is a function, set the data index to 0, it won't be needed
+                            new_data_idx = 0;
+                        }
+
+                        symbol.internal_mut().set_value_idx(new_data_idx);
+                        let new_symbol = symbol.internal().clone();
+
+                        let new_symbol_entry = MasterSymbolEntry::new(new_symbol, symbol.context());
+                        let new_name_entry =
+                            NameTableEntry::from(name_entry.name().to_owned(), new_symbol_entry);
+
+                        master_symbol_table.raw_insert(symbol.name_hash(), new_name_entry);
                     }
-
-                    let new_symbol = KOSymbol::new(
-                        0,
-                        new_data_idx,
-                        symbol.internal().size(),
-                        symbol.internal().sym_bind(),
-                        symbol.internal().sym_type(),
-                        symbol.internal().sh_idx(),
-                    );
-
-                    let new_symbol_entry = MasterSymbolEntry::new(new_symbol, symbol.context());
-                    let new_name_entry =
-                        NameTableEntry::from(name_entry.name().to_owned(), new_symbol_entry);
-
-                    master_symbol_table.raw_insert(symbol.name_hash(), new_name_entry);
                 }
             }
         }
 
         Ok(())
-    }
-
-    fn read_file(path: String) -> LinkResult<(String, KOFile)> {
-        let copied_path = String::clone(&path);
-        let path_obj = Path::new(&path);
-
-        let file_name_os = path_obj
-            .file_name()
-            .ok_or(LinkError::InvalidPathError(copied_path))?;
-        let file_name = file_name_os
-            .to_owned()
-            .into_string()
-            .map_err(|_| LinkError::StringConversionError)?;
-
-        let mut buffer = Vec::with_capacity(2048);
-        let mut file = std::fs::File::open(&path)
-            .map_err(|e| LinkError::IOError(OsString::from(file_name_os), e.kind()))?;
-        file.read_to_end(&mut buffer).unwrap();
-        let mut buffer_iter = buffer.iter().peekable();
-
-        Ok((
-            file_name,
-            KOFile::from_bytes(&mut buffer_iter, false)
-                .map_err(|error| LinkError::FileReadError(OsString::from(file_name_os), error))?,
-        ))
-    }
-
-    fn process_file(file_name: String, kofile: KOFile) -> LinkResult<ObjectData> {
-        let mut hasher = DefaultHasher::new();
-
-        hasher.write(file_name.as_bytes());
-        let file_name_hash = ContextHash::FileNameHash(hasher.finish());
-
-        let comment = match kofile.str_tab_by_name(".comment") {
-            Some(section) => match section.get(0) {
-                Some(name) => Some(name.to_owned()),
-                None => None,
-            },
-            None => None,
-        };
-
-        let symtab = kofile
-            .sym_tab_by_name(".symtab")
-            .ok_or(LinkError::MissingSectionError(
-                file_name.to_owned(),
-                String::from(".symtab"),
-            ))?;
-        let symstrtab =
-            kofile
-                .str_tab_by_name(".symstrtab")
-                .ok_or(LinkError::MissingSectionError(
-                    file_name.to_owned(),
-                    String::from(".symstrtab"),
-                ))?;
-        let data_section =
-            kofile
-                .data_section_by_name(".data")
-                .ok_or(LinkError::MissingSectionError(
-                    file_name.to_owned(),
-                    String::from(".data"),
-                ))?;
-        let reld_section_opt = kofile.reld_section_by_name(".reld");
-
-        let mut reld_map = HashMap::<usize, HashMap<usize, (Option<usize>, Option<usize>)>>::new();
-
-        let mut symbol_table = SymbolTable::new();
-        let mut function_table = FunctionTable::new();
-        let mut data_table = DataTable::new();
-        let mut symbol_name_table = NameTable::<NonZeroUsize>::new();
-        let mut function_name_table = NameTable::<NonZeroUsize>::new();
-
-        match reld_section_opt {
-            Some(reld_section) => {
-                Driver::process_relocations(&reld_section, &mut reld_map);
-            }
-            None => {}
-        }
-
-        let mut file_symbol_opt = None;
-
-        // Find the file symbol
-        for symbol in symtab.symbols() {
-            if symbol.sym_type() == SymType::File {
-                file_symbol_opt = Some(symbol);
-                break;
-            }
-        }
-
-        let file_symbol =
-            file_symbol_opt.ok_or(LinkError::MissingFileSymbolError(file_name.to_owned()))?;
-        let source_file_name = symstrtab
-            .get(file_symbol.name_idx())
-            .ok_or(LinkError::MissingFileSymbolNameError(file_name.to_owned()))?
-            .to_owned();
-
-        let file_error_context = FileErrorContext {
-            input_file_name: file_name.to_owned(),
-            source_file_name: source_file_name.to_owned(),
-        };
-
-        let mut data_index_map = HashMap::<usize, (u64, NonZeroUsize)>::new();
-
-        for (i, value) in data_section.data().enumerate() {
-            let new_entry = data_table.add(value.clone());
-
-            data_index_map.insert(i, new_entry);
-        }
-
-        let mut referenced_symbol_map = HashMap::<usize, NonZeroUsize>::with_capacity(64);
-
-        // Loop through each function section
-        for func_section in kofile.func_sections() {
-            let name = kofile
-                .sh_name_from_index(func_section.section_index())
-                .ok_or(LinkError::MissingFunctionNameError(
-                    file_name.to_owned(),
-                    source_file_name.to_owned(),
-                    func_section.section_index(),
-                ))?;
-
-            let func_error_context = FuncErrorContext {
-                file_context: file_error_context.clone(),
-                func_name: name.to_owned(),
-            };
-
-            function_name_table.insert(NameTableEntry::from(name.to_owned(), unsafe {
-                NonZeroUsize::new_unchecked(1)
-            })); // 1 is a placeholder here because there is no file name table to reference
-
-            hasher = DefaultHasher::new();
-            hasher.write(name.as_bytes());
-
-            let hash_value = hasher.finish();
-
-            let func_name_hash = ContextHash::FuncNameHash(hash_value);
-
-            let mut function_entry = Function::new(hash_value);
-
-            let func_reld = reld_map.get(&func_section.section_index());
-
-            for (i, instr) in func_section.instructions().enumerate() {
-                let temp_instr = match instr {
-                    kerbalobjects::kofile::instructions::Instr::ZeroOp(opcode) => {
-                        TempInstr::ZeroOp(*opcode)
-                    }
-                    kerbalobjects::kofile::instructions::Instr::OneOp(opcode, op1) => {
-                        match func_reld.map(|reld| reld.get(&i)).flatten() {
-                            Some(data) => TempInstr::OneOp(
-                                *opcode,
-                                Driver::tempop_from(
-                                    &symtab,
-                                    &symstrtab,
-                                    &func_error_context,
-                                    &data_index_map,
-                                    &mut referenced_symbol_map,
-                                    &mut symbol_table,
-                                    &mut symbol_name_table,
-                                    func_name_hash,
-                                    i,
-                                    data.0,
-                                    *op1,
-                                )?,
-                            ),
-                            None => TempInstr::OneOp(
-                                *opcode,
-                                Driver::data_tempop_from(
-                                    &func_error_context,
-                                    &data_index_map,
-                                    i,
-                                    *op1,
-                                )?,
-                            ),
-                        }
-                    }
-                    kerbalobjects::kofile::instructions::Instr::TwoOp(opcode, op1, op2) => {
-                        match func_reld.map(|reld| reld.get(&i)).flatten() {
-                            Some(data) => TempInstr::TwoOp(
-                                *opcode,
-                                Driver::tempop_from(
-                                    &symtab,
-                                    &symstrtab,
-                                    &func_error_context,
-                                    &data_index_map,
-                                    &mut referenced_symbol_map,
-                                    &mut symbol_table,
-                                    &mut symbol_name_table,
-                                    func_name_hash,
-                                    i,
-                                    data.0,
-                                    *op1,
-                                )?,
-                                Driver::tempop_from(
-                                    &symtab,
-                                    &symstrtab,
-                                    &func_error_context,
-                                    &data_index_map,
-                                    &mut referenced_symbol_map,
-                                    &mut symbol_table,
-                                    &mut symbol_name_table,
-                                    func_name_hash,
-                                    i,
-                                    data.1,
-                                    *op2,
-                                )?,
-                            ),
-                            None => TempInstr::TwoOp(
-                                *opcode,
-                                Driver::data_tempop_from(
-                                    &func_error_context,
-                                    &data_index_map,
-                                    i,
-                                    *op1,
-                                )?,
-                                Driver::data_tempop_from(
-                                    &func_error_context,
-                                    &data_index_map,
-                                    i,
-                                    *op2,
-                                )?,
-                            ),
-                        }
-                    }
-                };
-
-                function_entry.add(temp_instr);
-            }
-
-            function_table.add(function_entry);
-        }
-
-        // Add all non-referenced global symbols
-        for (i, symbol) in symtab.symbols().enumerate() {
-            if !referenced_symbol_map.contains_key(&i)
-                && symbol.sym_bind() == SymBind::Global
-                && symbol.sym_type() != SymType::File
-            {
-                let name = symstrtab
-                    .get(symbol.name_idx())
-                    .ok_or(LinkError::FileContextError(
-                        file_error_context.clone(),
-                        ProcessingError::MissingSymbolNameError(i, symbol.name_idx()),
-                    ))?;
-                hasher = DefaultHasher::new();
-                hasher.write(name.as_bytes());
-                let name_hash = hasher.finish();
-
-                let new_data_entry =
-                    data_index_map
-                        .get(&symbol.value_idx())
-                        .ok_or(LinkError::FileContextError(
-                            file_error_context.clone(),
-                            ProcessingError::InvalidSymbolDataIndexError(
-                                name.to_owned(),
-                                symbol.value_idx(),
-                            ),
-                        ))?;
-
-                let new_symbol = KOSymbol::new(
-                    symbol.name_idx(),
-                    new_data_entry.1.get() - 1,
-                    symbol.size(),
-                    symbol.sym_bind(),
-                    symbol.sym_type(),
-                    symbol.sh_idx(),
-                );
-
-                let symbol_entry = SymbolEntry::new(name_hash, new_symbol, file_name_hash);
-
-                let table_index = symbol_table.add(symbol_entry);
-                symbol_name_table.insert(NameTableEntry::from(name.to_owned(), table_index));
-            }
-        }
-
-        Ok(ObjectData {
-            input_file_name: file_name,
-            source_file_name,
-            comment,
-            symbol_name_table,
-            function_name_table,
-            function_table,
-            symbol_table,
-            data_table,
-        })
-    }
-
-    fn tempop_from(
-        symtab: &kerbalobjects::kofile::sections::SymbolTable,
-        symstrtab: &kerbalobjects::kofile::sections::StringTable,
-        func_error_context: &FuncErrorContext,
-        data_index_map: &HashMap<usize, (u64, NonZeroUsize)>,
-        referenced_symbol_map: &mut HashMap<usize, NonZeroUsize>,
-        symbol_table: &mut SymbolTable,
-        symbol_name_table: &mut NameTable<NonZeroUsize>,
-        func_name_hash: ContextHash,
-        instr_index: usize,
-        reld_data: Option<usize>,
-        operand: usize,
-    ) -> LinkResult<TempOperand> {
-        Ok(match reld_data {
-            Some(sym_idx) => {
-                // If this symbol has not been previously referenced
-                if !referenced_symbol_map.contains_key(&sym_idx) {
-                    let mut symbol = symtab
-                        .get(sym_idx)
-                        .ok_or(LinkError::FuncContextError(
-                            func_error_context.clone(),
-                            ProcessingError::InvalidSymbolIndexError(instr_index, sym_idx),
-                        ))?
-                        .clone();
-
-                    let name =
-                        symstrtab
-                            .get(symbol.name_idx())
-                            .ok_or(LinkError::FuncContextError(
-                                func_error_context.clone(),
-                                ProcessingError::MissingSymbolNameError(sym_idx, symbol.name_idx()),
-                            ))?;
-
-                    if symbol.sym_type() == SymType::NoType && symbol.sym_bind() != SymBind::Extern
-                    {
-                        let new_data_entry = data_index_map.get(&symbol.value_idx()).ok_or(
-                            LinkError::FuncContextError(
-                                func_error_context.clone(),
-                                ProcessingError::InvalidSymbolDataIndexError(
-                                    name.to_owned(),
-                                    symbol.value_idx(),
-                                ),
-                            ),
-                        )?;
-
-                        symbol = KOSymbol::new(
-                            symbol.name_idx(),
-                            new_data_entry.1.get() - 1,
-                            symbol.size(),
-                            symbol.sym_bind(),
-                            symbol.sym_type(),
-                            symbol.sh_idx(),
-                        );
-                    }
-                    let mut hasher = DefaultHasher::new();
-
-                    hasher.write(name.as_bytes());
-                    let name_hash = hasher.finish();
-
-                    let symbol_entry = SymbolEntry::new(name_hash, symbol, func_name_hash);
-
-                    let table_index = symbol_table.add(symbol_entry);
-                    symbol_name_table.insert(NameTableEntry::from(name.to_owned(), table_index));
-
-                    referenced_symbol_map.insert(sym_idx, table_index);
-
-                    TempOperand::SymNameHash(name_hash)
-                }
-                // If it has
-                else {
-                    let name_hash = *symbol_name_table
-                        .get_hash_at(*referenced_symbol_map.get(&sym_idx).unwrap())
-                        .unwrap();
-                    TempOperand::SymNameHash(name_hash)
-                }
-            }
-            None => Driver::data_tempop_from(
-                &func_error_context,
-                &data_index_map,
-                instr_index,
-                operand,
-            )?,
-        })
-    }
-
-    fn data_tempop_from(
-        func_error_context: &FuncErrorContext,
-        data_index_map: &HashMap<usize, (u64, NonZeroUsize)>,
-        instr_index: usize,
-        operand: usize,
-    ) -> LinkResult<TempOperand> {
-        let data_result = *data_index_map
-            .get(&operand)
-            .ok_or(LinkError::FuncContextError(
-                func_error_context.clone(),
-                ProcessingError::InvalidDataIndexError(instr_index, operand),
-            ))?;
-        Ok(TempOperand::DataHash(data_result.0))
-    }
-
-    fn process_relocations(
-        reld_section: &ReldSection,
-        reld_map: &mut HashMap<usize, HashMap<usize, (Option<usize>, Option<usize>)>>,
-    ) {
-        for entry in reld_section.entries() {
-            match reld_map.get_mut(&entry.section_index()) {
-                Some(func_map) => match func_map.get_mut(&entry.instr_index()) {
-                    Some(data) => match entry.operand_index() {
-                        0 => data.0 = Some(entry.symbol_index()),
-                        1 => data.1 = Some(entry.symbol_index()),
-                        _ => unreachable!(),
-                    },
-                    None => {
-                        let mut data = (None, None);
-
-                        match entry.operand_index() {
-                            0 => data.0 = Some(entry.symbol_index()),
-                            1 => data.1 = Some(entry.symbol_index()),
-                            _ => unreachable!(),
-                        }
-
-                        func_map.insert(entry.instr_index(), data);
-                    }
-                },
-                None => {
-                    let mut func_map = HashMap::new();
-
-                    let mut data = (None, None);
-
-                    match entry.operand_index() {
-                        0 => data.0 = Some(entry.symbol_index()),
-                        1 => data.1 = Some(entry.symbol_index()),
-                        _ => unreachable!(),
-                    }
-
-                    func_map.insert(entry.instr_index(), data);
-
-                    reld_map.insert(entry.section_index(), func_map);
-                }
-            }
-        }
     }
 }

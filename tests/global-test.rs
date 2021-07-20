@@ -1,5 +1,4 @@
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Write};
 
 use kerbalobjects::{
     kofile::{
@@ -9,8 +8,7 @@ use kerbalobjects::{
     },
     FromBytes, KOSValue, Opcode, ToBytes,
 };
-use klinker::driver::Driver;
-use klinker::CLIConfig;
+use klinker::{driver::Driver, CLIConfig};
 
 #[test]
 fn link_with_globals() {
@@ -18,12 +16,12 @@ fn link_with_globals() {
     write_link_with_globals_lib();
 
     let mut buffer = Vec::with_capacity(2048);
-    let mut main_file = std::fs::File::open("./tests/test-global-main.ko")
-        .expect("Error opening test-global-main.ko");
+    let mut main_file =
+        std::fs::File::open("./tests/global/main.ko").expect("Error opening main.ko");
 
     main_file
         .read_to_end(&mut buffer)
-        .expect("Error reading test-global-main.ko");
+        .expect("Error reading main.ko");
 
     let mut buffer_iter = buffer.iter().peekable();
 
@@ -31,11 +29,10 @@ fn link_with_globals() {
 
     buffer.clear();
 
-    let mut lib_file = std::fs::File::open("./tests/test-global-lib.ko")
-        .expect("Error opening test-global-lib.ko");
+    let mut lib_file = std::fs::File::open("./tests/global/lib.ko").expect("Error opening lib.ko");
     lib_file
         .read_to_end(&mut buffer)
-        .expect("Error reading test-global-lib.ko");
+        .expect("Error reading lib.ko");
 
     buffer_iter = buffer.iter().peekable();
 
@@ -43,7 +40,7 @@ fn link_with_globals() {
 
     let config = CLIConfig {
         file_paths: Vec::new(),
-        output_path_value: String::from("./tests/test-global.ksm"),
+        output_path_value: String::from("./tests/global/globals.ksm"),
         entry_point: String::from("_start"),
         shared: false,
         debug: true,
@@ -51,8 +48,8 @@ fn link_with_globals() {
 
     let mut driver = Driver::new(config.to_owned());
 
-    driver.add_file(String::from("test-global-main.ko"), main_ko);
-    driver.add_file(String::from("test-global-lib.ko"), lib_ko);
+    driver.add_file(String::from("main.ko"), main_ko);
+    driver.add_file(String::from("lib.ko"), lib_ko);
 
     match driver.link() {
         Ok(ksm_file) => {
@@ -60,11 +57,11 @@ fn link_with_globals() {
 
             ksm_file.to_bytes(&mut file_buffer);
 
-            let mut file = std::fs::File::create("./tests/link-globals.ksm")
-                .expect("Cannot create link-globals.ksm");
+            let mut file =
+                std::fs::File::create("./tests/globals.ksm").expect("Cannot create globals.ksm");
 
             file.write_all(file_buffer.as_slice())
-                .expect("Cannot write link-globals.ksm");
+                .expect("Cannot write globals.ksm");
         }
         Err(e) => {
             eprintln!("{}", e);
@@ -130,7 +127,7 @@ fn write_link_with_globals_main() {
         3,
     );
 
-    let file_symbol_name_idx = symstrtab.add("test-global-main.ko");
+    let file_symbol_name_idx = symstrtab.add("main.ko");
     let file_symbol = KOSymbol::new(
         file_symbol_name_idx,
         0,
@@ -155,11 +152,11 @@ fn write_link_with_globals_main() {
         .expect("Could not update KO headers properly");
     ko.to_bytes(&mut file_buffer);
 
-    let mut file = std::fs::File::create("./tests/test-global-main.ko")
-        .expect("Output file could not be created: test-global-main.ko");
+    let mut file = std::fs::File::create("./tests/global/main.ko")
+        .expect("Output file could not be created: main.ko");
 
     file.write_all(file_buffer.as_slice())
-        .expect("File test-global-main.ko could not be written to.");
+        .expect("File main.ko could not be written to.");
 }
 
 fn write_link_with_globals_lib() {
@@ -184,7 +181,7 @@ fn write_link_with_globals_lib() {
     );
     symtab.add(number_symbol);
 
-    let file_symbol_name_idx = symstrtab.add("test-global-lib.ko");
+    let file_symbol_name_idx = symstrtab.add("lib.ko");
     let file_symbol = KOSymbol::new(
         file_symbol_name_idx,
         0,
@@ -206,15 +203,9 @@ fn write_link_with_globals_lib() {
         .expect("Could not update KO headers properly");
     ko.to_bytes(&mut file_buffer);
 
-    let mut file = std::fs::File::create("./tests/test-global-lib.ko")
-        .expect("Output file could not be created: test-global-lib.ko");
+    let mut file = std::fs::File::create("./tests/global/lib.ko")
+        .expect("Output file could not be created: lib.ko");
 
     file.write_all(file_buffer.as_slice())
-        .expect("File test-global-lib.ko could not be written to.");
+        .expect("File lib.ko could not be written to.");
 }
-
-#[test]
-fn link_with_locals() {}
-
-#[test]
-fn duplicate_symbol_test() {}
