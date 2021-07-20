@@ -368,10 +368,6 @@ impl Driver {
                     if !func_ref_vec.contains(&hash) {
                         func_ref_vec.push(hash);
 
-                        println!("{:#?}", object_data.get(parent_object_data_index).unwrap());
-
-                        println!("Trying to add referenced function with hash {}", hash);
-
                         let referenced_func = temporary_function_vec
                             .iter()
                             .find(|func| func.name_hash() == hash)
