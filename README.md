@@ -63,7 +63,7 @@ kld also allows the user to specify the entry point of the program, or the funct
 kld -e __main__ main.ko -o program.ksm
 ```
 
-This will make the linker search for a function with the name "__main__" and then create the KSM file so that that code is what is run when the program starts up.
+This will make the linker search for a function with the name "\_\_main\_\_" and then create the KSM file so that that code is what is run when the program starts up.
 
 ## Features
 
