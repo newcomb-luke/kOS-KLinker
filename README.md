@@ -9,7 +9,9 @@ The Kerbal Linker can either be installed via [cargo]() through [crates.io], or 
 
 To install using **cargo**:
 
-`cargo install klinker`
+```
+cargo install klinker
+```
 
 `kld` should then be added to your shell's PATH, and can be run from any terminal
 
