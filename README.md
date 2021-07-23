@@ -5,7 +5,7 @@ This linker will successfully create both executables and shared libraries if su
 
 ## Installation
 
-The Kerbal Linker can either be installed via [cargo]() through [crates.io], or as a standalone binary.
+The Kerbal Linker can either be installed via [cargo](https://github.com/rust-lang/cargo) through [crates.io](https://crates.io/), or as a standalone binary.
 
 To install using **cargo**:
 
