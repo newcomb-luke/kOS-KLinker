@@ -1,5 +1,5 @@
 # KSM File Format Documentation 
-* Version 1
+* Version 1.0.1
 * Unofficial, written as of July 2021, Kerbal Operating System release version 1.3.2.0
   
 ## Contents
@@ -161,10 +161,10 @@ Push  2?
 This instruction takes one operand, and in this case the value of that operand is 5. First of all, the reason that this operand's size is only 1 byte is because in this example, we are assuming that argument index width from the Argument Section above, is 1. If that argument index width were 2, this Push instruction would be:
 
 ```
-0x4e 0x0500
+0x4e 0x0005
 ```
 
-Note that the operand, if multiple bytes, is in little-endian format.
+Note that the operand, if multiple bytes, is in **big-endian format** for some reason.
 
 Now for the value of the operand. The value of any instruction's operand does not represent the value that will be used, it represents a *byte index into the file's Argument Section of the value*. A key thing to note is that the Argument Section's header **is included** in the index. To be clear, that means that because the Argument Section's header is 3 bytes long (%A then number), the first index an argument can have is 3, and that refers to the first argument in the section.
 
