@@ -1,4 +1,4 @@
-# KCC Linker (kld)
+# Kerbal Linker (kld)
 The Kerbal Linker, or KLinker is a completely custom built linker designed to support development of a compiler toolchain for Kerbal Operating System. KLinker links KerbalObject files into KerboScript Machine Code files which can be run inside of kOS.
 
 This linker will successfully create both executables and shared libraries if supplied compliant KerbalObject files that follow the KerbalObject file format [specification](https://github.com/newcomb-luke/kOS-KLinker/blob/main/docs/KO-file-format.md). These KerbalObject files can be created by any assembler or compiler built to emit them, such as the [Kerbal Assembler](https://github.com/newcomb-luke/kOS-KASM). 
@@ -63,7 +63,7 @@ kld also allows the user to specify the entry point of the program, or the funct
 kld -e __main__ main.ko -o program.ksm
 ```
 
-This will make the linker search for a function with the name "__main__" and then create the KSM file so that that code is what is run when the program starts up.
+This will make the linker search for a function with the name "\_\_main\_\_" and then create the KSM file so that that code is what is run when the program starts up.
 
 ## Features
 
