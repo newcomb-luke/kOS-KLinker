@@ -24,6 +24,7 @@ pub enum LinkError {
     DataIndexOverflowError,
     MissingEntryPointError(String),
     MissingInitFunctionError,
+    EntryInSharedError,
     UnresolvedExternalSymbolError(String),
     InvalidSymbolRefError(String, usize, u64),
 }
@@ -115,6 +116,12 @@ impl Display for LinkError {
             }
             LinkError::MissingInitFunctionError => {
                 write!(f, "Cannot create shared object, missing _init function.")
+            }
+            LinkError::EntryInSharedError => {
+                write!(
+                    f,
+                    "Cannot create shared object, _start or other entry point is present"
+                )
             }
             LinkError::UnresolvedExternalSymbolError(name) => {
                 write!(

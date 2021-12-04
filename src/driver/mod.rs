@@ -9,7 +9,7 @@ use kerbalobjects::kofile::symbols::{SymBind, SymType};
 use kerbalobjects::kofile::KOFile;
 use kerbalobjects::ksmfile::sections::{ArgumentSection, CodeSection, DebugEntry, DebugRange};
 use kerbalobjects::ksmfile::{Instr, KSMFile};
-use kerbalobjects::KOSValue;
+use kerbalobjects::{KOSValue, Opcode};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -72,16 +72,9 @@ impl Driver {
         };
 
         let entry_point_hash = {
-            // If this should be linked as a shared object
-            if self.config.shared {
-                init_hash
-            }
-            // If not, then it is the entry point provided
-            else {
-                let mut hasher = DefaultHasher::new();
-                hasher.write(self.config.entry_point.as_bytes());
-                hasher.finish()
-            }
+            let mut hasher = DefaultHasher::new();
+            hasher.write(self.config.entry_point.as_bytes());
+            hasher.finish()
         };
 
         let mut master_data_table = DataTable::new();
@@ -183,6 +176,10 @@ impl Driver {
         }
 
         if let Some(start_func) = &start_function {
+            if self.config.shared {
+                return Err(LinkError::EntryInSharedError);
+            }
+
             // _init should go before _start
             if init_function.is_some() {
                 temporary_function_vec.insert(1, start_func.clone());
@@ -246,6 +243,14 @@ impl Driver {
             let value = KOSValue::String(comment);
             arg_section.add(value);
         }
+
+        // Either way we actually want to make sure that kOS knows where to begin executing code
+        // We know that we have some sort of entry point even if not _start
+        // So we will add a `lbrt "@0001"` to make sure that the code begins correctly
+        let begin_label = KOSValue::String(String::from("@0001"));
+        let begin_index = arg_section.add(begin_label);
+        code_section.add(Instr::OneOp(Opcode::Lbrt, begin_index));
+        func_offset += 1;
 
         // Loop through each function and find it's offset
         for func in master_function_vec.iter() {
