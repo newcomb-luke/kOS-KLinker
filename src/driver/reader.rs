@@ -58,7 +58,7 @@ impl Reader {
         let file_name_hash = ContextHash::FileNameHash(hasher.finish());
 
         let comment = match kofile.str_tab_by_name(".comment") {
-            Some(section) => match section.get(0) {
+            Some(section) => match section.get(1) {
                 Some(name) => Some(name.to_owned()),
                 None => None,
             },
