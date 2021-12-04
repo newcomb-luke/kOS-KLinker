@@ -1,6 +1,6 @@
 [package]
 name = "klinker"
-version = "2.0.7"
+version = "2.0.8"
 authors = ["Luke Newcomb <newcomb.luke@protonmail.com>"]
 edition = "2018"
 license = "GPL-3.0"
@@ -8,10 +8,8 @@ description = "The Kerbal Compiler Collection linker for kOS"
 readme = "README.md"
 homepage = "https://github.com/newcomb-luke/kOS-KLinker"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-clap = "~2.27.0"
+clap = "~2.34.0"
 flate2 = "1.0"
 kerbalobjects = "3.1.12"
 
