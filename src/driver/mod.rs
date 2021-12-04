@@ -677,7 +677,6 @@ impl Driver {
 
                     // If it is the entry point, try to set the comment
                     if entry_point_hash == symbol.name_hash() {
-                        println!("Lol: {:?}", object_data.comment);
                         *comment = object_data.comment.clone();
                     }
                 }
