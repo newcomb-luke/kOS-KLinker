@@ -183,7 +183,13 @@ impl Driver {
         }
 
         if let Some(start_func) = &start_function {
-            temporary_function_vec.insert(0, start_func.clone());
+            // _init should go before _start
+            if init_function.is_some() {
+                temporary_function_vec.insert(1, start_func.clone());
+            } else {
+                temporary_function_vec.insert(0, start_func.clone());
+            }
+
             func_ref_vec.push(start_func.name_hash());
         } else {
             // If we are not a shared library, that is required
