@@ -168,11 +168,11 @@ impl Display for ProcessingError {
                     symbol_index, name_index
                 )
             }
-            ProcessingError::InvalidSymbolDataIndexError(symbol_index, value_index) => {
+            ProcessingError::InvalidSymbolDataIndexError(symbol_name, value_index) => {
                 write!(
                     f,
-                    "Symbol at index {} references invalid data index {}",
-                    symbol_index, value_index
+                    "Symbol `{}` references invalid data index {}",
+                    symbol_name, value_index
                 )
             }
             ProcessingError::DuplicateSymbolError(symbol_name, original_file) => {
