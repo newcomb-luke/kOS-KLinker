@@ -28,7 +28,7 @@ To install using the standalone binaries:
 * Run the executable through the terminal, Powershell on Windows or the default terminal on Mac OS or Linux.
 
 To install using the Windows installer:
-* Download and extract the .zip file from Releases on the right
+* Download the .msi file from Releases on the right
 * Run the installer
 * `kld` should now be added to your PATH and available from any CMD or Powershell window
 
