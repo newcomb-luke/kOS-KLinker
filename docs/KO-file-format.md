@@ -50,7 +50,7 @@ KerbalObject files consist of a KO header, a section header table, then any numb
 
 All values in KO files are stored in little-endian format unless otherwise specified.
 
-KO files, like KSM files contain 4 bytes of "magic" that let any program reading the file know that this is a KO file. These bytes are: `0x0b 0x01 0x6f 0x66`, or in decimal `107, 1, 111, 102`.
+KO files, like KSM files contain 4 bytes of "magic" that let any program reading the file know that this is a KO file. These bytes are: `0x6b 0x01 0x6f 0x66`, or in decimal `107, 1, 111, 102`.
 
 If converted to ASCII, this becomes: k of, with the second byte having a value of 1, and not being ASCII text, just being a 1. Therefore: k1of, or klof. klof stands for Kerbal Linkable Object Format, which is what this format was originally called before being shortened to just KerbalObject files.
 
