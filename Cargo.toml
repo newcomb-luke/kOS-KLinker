@@ -2,7 +2,7 @@
 name = "klinker"
 version = "2.0.10"
 authors = ["Luke Newcomb <newcomb.luke@protonmail.com>"]
-edition = "2018"
+edition = "2021"
 license = "GPL-3.0"
 description = "The Kerbal Compiler Collection linker for kOS"
 readme = "README.md"
