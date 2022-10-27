@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
@@ -29,9 +30,9 @@ impl Reader {
     pub fn read_file(path: impl Into<PathBuf>) -> LinkResult<(String, KOFile)> {
         let path = path.into();
 
-        let file_name_os = path.file_name().ok_or(LinkError::InvalidPathError(
-            path.to_str().unwrap().to_string(),
-        ))?;
+        let file_name_os = path
+            .file_name()
+            .ok_or_else(|| LinkError::InvalidPathError(path.to_str().unwrap().to_string()))?;
         let file_name = file_name_os
             .to_owned()
             .into_string()
@@ -56,34 +57,19 @@ impl Reader {
         hasher.write(file_name.as_bytes());
         let file_name_hash = ContextHash::FileNameHash(hasher.finish());
 
-        let comment = match kofile.str_tab_by_name(".comment") {
-            Some(section) => match section.get(1) {
-                Some(name) => Some(name.to_owned()),
-                None => None,
-            },
-            None => None,
-        };
+        let comment = kofile
+            .str_tab_by_name(".comment")
+            .and_then(|section| section.get(1).cloned());
 
-        let symtab = kofile
-            .sym_tab_by_name(".symtab")
-            .ok_or(LinkError::MissingSectionError(
-                file_name.to_owned(),
-                String::from(".symtab"),
-            ))?;
-        let symstrtab =
-            kofile
-                .str_tab_by_name(".symstrtab")
-                .ok_or(LinkError::MissingSectionError(
-                    file_name.to_owned(),
-                    String::from(".symstrtab"),
-                ))?;
-        let data_section =
-            kofile
-                .data_section_by_name(".data")
-                .ok_or(LinkError::MissingSectionError(
-                    file_name.to_owned(),
-                    String::from(".data"),
-                ))?;
+        let symtab = kofile.sym_tab_by_name(".symtab").ok_or_else(|| {
+            LinkError::MissingSectionError(file_name.to_owned(), String::from(".symtab"))
+        })?;
+        let symstrtab = kofile.str_tab_by_name(".symstrtab").ok_or_else(|| {
+            LinkError::MissingSectionError(file_name.to_owned(), String::from(".symstrtab"))
+        })?;
+        let data_section = kofile.data_section_by_name(".data").ok_or_else(|| {
+            LinkError::MissingSectionError(file_name.to_owned(), String::from(".data"))
+        })?;
         let reld_section_opt = kofile.reld_section_by_name(".reld");
 
         let mut reld_map = HashMap::<usize, HashMap<usize, (Option<usize>, Option<usize>)>>::new();
@@ -101,7 +87,7 @@ impl Reader {
         let local_function_ref_vec = Vec::new();
 
         if let Some(reld_section) = reld_section_opt {
-            Reader::process_relocations(&reld_section, &mut reld_map);
+            Reader::process_relocations(reld_section, &mut reld_map);
         }
 
         let mut file_symbol_opt = None;
@@ -114,11 +100,11 @@ impl Reader {
             }
         }
 
-        let file_symbol =
-            file_symbol_opt.ok_or(LinkError::MissingFileSymbolError(file_name.to_owned()))?;
+        let file_symbol = file_symbol_opt
+            .ok_or_else(|| LinkError::MissingFileSymbolError(file_name.to_owned()))?;
         let source_file_name = symstrtab
             .get(file_symbol.name_idx())
-            .ok_or(LinkError::MissingFileSymbolNameError(file_name.to_owned()))?
+            .ok_or_else(|| LinkError::MissingFileSymbolNameError(file_name.to_owned()))?
             .to_owned();
 
         let file_error_context = FileErrorContext {
@@ -140,29 +126,32 @@ impl Reader {
         for func_section in kofile.func_sections() {
             let name = kofile
                 .sh_name_from_index(func_section.section_index())
-                .ok_or(LinkError::MissingFunctionNameError(
-                    file_name.to_owned(),
-                    source_file_name.to_owned(),
-                    func_section.section_index(),
-                ))?;
+                .ok_or_else(|| {
+                    LinkError::MissingFunctionNameError(
+                        file_name.to_owned(),
+                        source_file_name.to_owned(),
+                        func_section.section_index(),
+                    )
+                })?;
 
             let func_error_context = FuncErrorContext {
                 file_context: file_error_context.clone(),
                 func_name: name.to_owned(),
             };
 
-            let func_name_idx = symstrtab.find(name).ok_or(LinkError::FuncContextError(
-                func_error_context.to_owned(),
-                ProcessingError::FuncMissingSymbolError,
-            ))?;
+            let func_name_idx = symstrtab.find(name).ok_or_else(|| {
+                LinkError::FuncContextError(
+                    func_error_context.to_owned(),
+                    ProcessingError::FuncMissingSymbolError,
+                )
+            })?;
 
-            let func_symbol =
-                symtab
-                    .find_has_name(func_name_idx)
-                    .ok_or(LinkError::FuncContextError(
-                        func_error_context.to_owned(),
-                        ProcessingError::FuncMissingSymbolError,
-                    ))?;
+            let func_symbol = symtab.find_has_name(func_name_idx).ok_or_else(|| {
+                LinkError::FuncContextError(
+                    func_error_context.to_owned(),
+                    ProcessingError::FuncMissingSymbolError,
+                )
+            })?;
 
             if func_symbol.sym_type() != SymType::Func {
                 return Err(LinkError::FuncContextError(
@@ -192,12 +181,12 @@ impl Reader {
                         TempInstr::ZeroOp(*opcode)
                     }
                     kerbalobjects::kofile::instructions::Instr::OneOp(opcode, op1) => {
-                        match func_reld.map(|reld| reld.get(&i)).flatten() {
+                        match func_reld.and_then(|reld| reld.get(&i)) {
                             Some(data) => TempInstr::OneOp(
                                 *opcode,
                                 Reader::tempop_from(
-                                    &symtab,
-                                    &symstrtab,
+                                    symtab,
+                                    symstrtab,
                                     &func_error_context,
                                     &data_index_map,
                                     &mut referenced_symbol_map,
@@ -222,12 +211,12 @@ impl Reader {
                         }
                     }
                     kerbalobjects::kofile::instructions::Instr::TwoOp(opcode, op1, op2) => {
-                        match func_reld.map(|reld| reld.get(&i)).flatten() {
+                        match func_reld.and_then(|reld| reld.get(&i)) {
                             Some(data) => TempInstr::TwoOp(
                                 *opcode,
                                 Reader::tempop_from(
-                                    &symtab,
-                                    &symstrtab,
+                                    symtab,
+                                    symstrtab,
                                     &func_error_context,
                                     &data_index_map,
                                     &mut referenced_symbol_map,
@@ -240,8 +229,8 @@ impl Reader {
                                     *op1,
                                 )?,
                                 Reader::tempop_from(
-                                    &symtab,
-                                    &symstrtab,
+                                    symtab,
+                                    symstrtab,
                                     &func_error_context,
                                     &data_index_map,
                                     &mut referenced_symbol_map,
@@ -291,28 +280,27 @@ impl Reader {
                 && symbol.sym_bind() == SymBind::Global
                 && symbol.sym_type() != SymType::File
             {
-                let name = symstrtab
-                    .get(symbol.name_idx())
-                    .ok_or(LinkError::FileContextError(
+                let name = symstrtab.get(symbol.name_idx()).ok_or_else(|| {
+                    LinkError::FileContextError(
                         file_error_context.clone(),
                         ProcessingError::MissingSymbolNameError(i, symbol.name_idx()),
-                    ))?;
+                    )
+                })?;
                 hasher = DefaultHasher::new();
                 hasher.write(name.as_bytes());
                 let name_hash = hasher.finish();
 
-                let new_data_entry =
-                    data_index_map
-                        .get(&symbol.value_idx())
-                        .ok_or(LinkError::FileContextError(
-                            file_error_context.clone(),
-                            ProcessingError::InvalidSymbolDataIndexError(
-                                name.to_owned(),
-                                symbol.value_idx(),
-                            ),
-                        ))?;
+                let new_data_entry = data_index_map.get(&symbol.value_idx()).ok_or_else(|| {
+                    LinkError::FileContextError(
+                        file_error_context.clone(),
+                        ProcessingError::InvalidSymbolDataIndexError(
+                            name.to_owned(),
+                            symbol.value_idx(),
+                        ),
+                    )
+                })?;
 
-                let mut new_symbol = symbol.clone();
+                let mut new_symbol = *symbol;
                 new_symbol.set_value_idx(new_data_entry.1.get() - 1);
 
                 let symbol_entry = SymbolEntry::new(name_hash, new_symbol, file_name_hash);
@@ -339,6 +327,7 @@ impl Reader {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn tempop_from(
         symtab: &kerbalobjects::kofile::sections::SymbolTable,
         symstrtab: &kerbalobjects::kofile::sections::StringTable,
@@ -356,70 +345,66 @@ impl Reader {
         Ok(match reld_data {
             Some(sym_idx) => {
                 // If this symbol has not been previously referenced
-                if !referenced_symbol_map.contains_key(&sym_idx) {
-                    let mut symbol = symtab
-                        .get(sym_idx)
-                        .ok_or(LinkError::FuncContextError(
-                            func_error_context.clone(),
-                            ProcessingError::InvalidSymbolIndexError(instr_index, sym_idx),
-                        ))?
-                        .clone();
-
-                    let name =
-                        symstrtab
-                            .get(symbol.name_idx())
-                            .ok_or(LinkError::FuncContextError(
-                                func_error_context.clone(),
-                                ProcessingError::MissingSymbolNameError(sym_idx, symbol.name_idx()),
-                            ))?;
-
-                    if symbol.sym_type() == SymType::NoType && symbol.sym_bind() != SymBind::Extern
-                    {
-                        let new_data_entry = data_index_map.get(&symbol.value_idx()).ok_or(
+                match referenced_symbol_map.entry(sym_idx) {
+                    Entry::Occupied(e) => {
+                        let name_hash = *symbol_name_table.get_hash_at(*e.get()).unwrap();
+                        TempOperand::SymNameHash(name_hash)
+                    }
+                    Entry::Vacant(e) => {
+                        let mut symbol = *symtab.get(sym_idx).ok_or_else(|| {
                             LinkError::FuncContextError(
                                 func_error_context.clone(),
-                                ProcessingError::InvalidSymbolDataIndexError(
-                                    name.to_owned(),
-                                    symbol.value_idx(),
-                                ),
-                            ),
-                        )?;
+                                ProcessingError::InvalidSymbolIndexError(instr_index, sym_idx),
+                            )
+                        })?;
 
-                        symbol.set_value_idx(new_data_entry.1.get() - 1);
+                        let name = symstrtab.get(symbol.name_idx()).ok_or_else(|| {
+                            LinkError::FuncContextError(
+                                func_error_context.clone(),
+                                ProcessingError::MissingSymbolNameError(sym_idx, symbol.name_idx()),
+                            )
+                        })?;
+
+                        if symbol.sym_type() == SymType::NoType
+                            && symbol.sym_bind() != SymBind::Extern
+                        {
+                            let new_data_entry =
+                                data_index_map.get(&symbol.value_idx()).ok_or_else(|| {
+                                    LinkError::FuncContextError(
+                                        func_error_context.clone(),
+                                        ProcessingError::InvalidSymbolDataIndexError(
+                                            name.to_owned(),
+                                            symbol.value_idx(),
+                                        ),
+                                    )
+                                })?;
+
+                            symbol.set_value_idx(new_data_entry.1.get() - 1);
+                        }
+                        let mut hasher = DefaultHasher::new();
+
+                        hasher.write(name.as_bytes());
+                        let name_hash = hasher.finish();
+
+                        let symbol_entry = SymbolEntry::new(name_hash, symbol, func_name_hash);
+
+                        if symbol.sym_bind() != SymBind::Local {
+                            let table_index = symbol_table.add(symbol_entry);
+                            symbol_name_table
+                                .insert(NameTableEntry::from(name.to_owned(), table_index));
+
+                            e.insert(table_index);
+                        } else {
+                            local_symbol_table.add(symbol_entry);
+                        }
+
+                        TempOperand::SymNameHash(name_hash)
                     }
-                    let mut hasher = DefaultHasher::new();
-
-                    hasher.write(name.as_bytes());
-                    let name_hash = hasher.finish();
-
-                    let symbol_entry = SymbolEntry::new(name_hash, symbol, func_name_hash);
-
-                    if symbol.sym_bind() != SymBind::Local {
-                        let table_index = symbol_table.add(symbol_entry);
-                        symbol_name_table
-                            .insert(NameTableEntry::from(name.to_owned(), table_index));
-
-                        referenced_symbol_map.insert(sym_idx, table_index);
-                    } else {
-                        local_symbol_table.add(symbol_entry);
-                    }
-
-                    TempOperand::SymNameHash(name_hash)
-                }
-                // If it has
-                else {
-                    let name_hash = *symbol_name_table
-                        .get_hash_at(*referenced_symbol_map.get(&sym_idx).unwrap())
-                        .unwrap();
-                    TempOperand::SymNameHash(name_hash)
                 }
             }
-            None => Reader::data_tempop_from(
-                &func_error_context,
-                &data_index_map,
-                instr_index,
-                operand,
-            )?,
+            None => {
+                Reader::data_tempop_from(func_error_context, data_index_map, instr_index, operand)?
+            }
         })
     }
 
@@ -429,12 +414,12 @@ impl Reader {
         instr_index: usize,
         operand: usize,
     ) -> LinkResult<TempOperand> {
-        let data_result = *data_index_map
-            .get(&operand)
-            .ok_or(LinkError::FuncContextError(
+        let data_result = *data_index_map.get(&operand).ok_or_else(|| {
+            LinkError::FuncContextError(
                 func_error_context.clone(),
                 ProcessingError::InvalidDataIndexError(instr_index, operand),
-            ))?;
+            )
+        })?;
         Ok(TempOperand::DataHash(data_result.0))
     }
 
