@@ -1,15 +1,15 @@
 [package]
 name = "klinker"
-version = "2.0.10"
+version = "2.0.11"
 authors = ["Luke Newcomb <newcomb.luke@protonmail.com>"]
-edition = "2018"
+edition = "2021"
 license = "GPL-3.0"
 description = "The Kerbal Compiler Collection linker for kOS"
 readme = "README.md"
 homepage = "https://github.com/newcomb-luke/kOS-KLinker"
 
 [dependencies]
-clap = "~2.34.0"
+clap = { version = "4.0.18", features = ["derive"] }
 flate2 = "1.0"
 kerbalobjects = "3.1.13"
 

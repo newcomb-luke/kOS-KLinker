@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
 use kerbalobjects::{
     kofile::{
@@ -53,14 +54,14 @@ fn link_with_locals() {
     let intlib_ko = KOFile::from_bytes(&mut buffer_iter, false).expect("Error reading KO file");
 
     let config = CLIConfig {
-        file_paths: Vec::new(),
-        output_path_value: String::from("./tests/locals.ksm"),
+        input_paths: Vec::new(),
+        output_path: PathBuf::from("./tests/locals.ksm"),
         entry_point: String::from("_start"),
         shared: false,
         debug: true,
     };
 
-    let mut driver = Driver::new(config.to_owned());
+    let mut driver = Driver::new(config);
 
     driver.add_file(String::from("main.ko"), main_ko);
     driver.add_file(String::from("floatlib.ko"), floatlib_ko);
@@ -80,7 +81,7 @@ fn link_with_locals() {
         }
         Err(e) => {
             eprintln!("{}", e);
-            assert!(false, "Failed to link locals");
+            panic!("Failed to link locals");
         }
     }
 }
