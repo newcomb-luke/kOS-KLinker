@@ -1,6 +1,6 @@
 [package]
 name = "klinker"
-version = "2.0.11"
+version = "3.0.0"
 authors = ["Luke Newcomb <newcomb.luke@protonmail.com>"]
 edition = "2021"
 license = "GPL-3.0"
