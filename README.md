@@ -1,11 +1,6 @@
 # Kerbal Linker (kld)
 
-[![Libraries.io dependency status for GitHub repo](https://img.shields.io/librariesio/github/newcomb-luke/kOS-KLinker)](https://deps.rs/repo/github/newcomb-luke/kOS-KLinker)
-![GitHub](https://img.shields.io/github/license/newcomb-luke/kOS-KLinker)
-
-![Crates.io](https://img.shields.io/crates/v/klinker?color=%235555cc)
-
-![Cra[<img src="https://img.shields.io/badge/github-newcomb--luke%2FkOS--KLinker-8da0cb?style=for-the-badge&logo=github&labelColor=555555" alt="github" height="24">](https://github.com/newcomb-luke/kOS-KLinker)
+[<img src="https://img.shields.io/badge/github-newcomb--luke%2FkOS--KLinker-8da0cb?style=for-the-badge&logo=github&labelColor=555555" alt="github" height="24">](https://github.com/newcomb-luke/kOS-KLinker)
 [<img src="https://img.shields.io/crates/v/klinker?color=fc8d62&logo=rust&style=for-the-badge" alt="github" height="24">](https://crates.io/crates/klinker)
 [<img alt="License" src="https://img.shields.io/github/license/newcomb-luke/kOS-KLinker?style=for-the-badge" height="24">]()
 
