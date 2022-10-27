@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::panic;
+use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
 pub mod reader;
@@ -37,10 +38,11 @@ impl Driver {
         }
     }
 
-    pub fn add(&mut self, path: &str) {
-        let path_string = String::from(path);
+    pub fn add(&mut self, path: impl Into<PathBuf>) {
+        let path = path.into();
+
         let handle = thread::spawn(move || {
-            let (file_name, kofile) = Reader::read_file(path_string)?;
+            let (file_name, kofile) = Reader::read_file(path)?;
             Reader::process_file(file_name, kofile)
         });
         self.thread_handles.push(handle);
@@ -274,7 +276,7 @@ impl Driver {
                 &master_function_name_table,
                 &func_hash_map,
                 &mut data_hash_map,
-                &object_data.get(object_data_index).unwrap(),
+                object_data.get(object_data_index).unwrap(),
             )?;
         }
 
@@ -294,6 +296,7 @@ impl Driver {
         Ok(ksm_file)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_func_to_code_section(
         func: &mut Function,
         arg_section: &mut ArgumentSection,
@@ -305,9 +308,7 @@ impl Driver {
         data_hash_map: &mut HashMap<u64, usize>,
         object_data: &ObjectData,
     ) -> LinkResult<()> {
-        let mut instr_index = 0;
-
-        for instr in func.drain() {
+        for (instr_index, instr) in func.drain().into_iter().enumerate() {
             let concrete = Driver::concrete_instr(
                 instr,
                 arg_section,
@@ -320,7 +321,6 @@ impl Driver {
                 func.name_hash(),
                 instr_index,
             )?;
-            instr_index += 1;
 
             code_section.add(concrete);
         }
@@ -498,6 +498,7 @@ impl Driver {
         current_offset + size
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn concrete_instr(
         temp: TempInstr,
         arg_section: &mut ArgumentSection,
@@ -567,6 +568,7 @@ impl Driver {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn tempop_to_concrete(
         op: TempOperand,
         arg_section: &mut ArgumentSection,
@@ -636,7 +638,7 @@ impl Driver {
 
                         let data_hash = master_data_table.hash_at(index).unwrap();
 
-                        match data_hash_map.get(&data_hash) {
+                        match data_hash_map.get(data_hash) {
                             Some(index) => Ok(*index),
                             None => {
                                 let value = master_data_table.get_at(index).unwrap();
@@ -687,9 +689,8 @@ impl Driver {
                         if other_symbol.value().internal().sym_bind() == SymBind::Extern {
                             // If this new symbol is _not_ external
                             if symbol.internal().sym_bind() != SymBind::Extern {
-                                let new_data_idx;
-
-                                if symbol.internal().sym_type() != SymType::Func {
+                                let new_data_idx = if symbol.internal().sym_type() != SymType::Func
+                                {
                                     let data_index = unsafe {
                                         NonZeroUsize::new_unchecked(
                                             symbol.internal().value_idx() + 1,
@@ -699,14 +700,14 @@ impl Driver {
 
                                     let (_, non_zero_idx) = master_data_table.add(data.clone());
 
-                                    new_data_idx = non_zero_idx.get() - 1;
+                                    non_zero_idx.get() - 1
                                 } else {
                                     // If this is a function, set the data index to 0, it won't be needed
-                                    new_data_idx = 0;
-                                }
+                                    0
+                                };
 
                                 symbol.internal_mut().set_value_idx(new_data_idx);
-                                let new_symbol = symbol.internal().clone();
+                                let new_symbol = *symbol.internal();
 
                                 let new_symbol_entry =
                                     MasterSymbolEntry::new(new_symbol, symbol.context());
@@ -777,9 +778,7 @@ impl Driver {
                         }
                     }
                     None => {
-                        let new_data_idx;
-
-                        if symbol.internal().sym_type() != SymType::Func {
+                        let new_data_idx = if symbol.internal().sym_type() != SymType::Func {
                             let data_index = unsafe {
                                 NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
                             };
@@ -788,14 +787,14 @@ impl Driver {
 
                             let (_, non_zero_idx) = master_data_table.add(data.clone());
 
-                            new_data_idx = non_zero_idx.get() - 1;
+                            non_zero_idx.get() - 1
                         } else {
                             // If this is a function, set the data index to 0, it won't be needed
-                            new_data_idx = 0;
-                        }
+                            0
+                        };
 
                         symbol.internal_mut().set_value_idx(new_data_idx);
-                        let new_symbol = symbol.internal().clone();
+                        let new_symbol = *symbol.internal();
 
                         let new_symbol_entry = MasterSymbolEntry::new(new_symbol, symbol.context());
                         let new_name_entry =

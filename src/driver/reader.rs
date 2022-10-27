@@ -1,10 +1,10 @@
+use std::path::PathBuf;
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     ffi::OsString,
     hash::Hasher,
     io::Read,
     num::NonZeroUsize,
-    path::Path,
 };
 
 use kerbalobjects::{
@@ -26,13 +26,12 @@ use super::errors::{FileErrorContext, FuncErrorContext, LinkError, LinkResult, P
 pub struct Reader {}
 
 impl Reader {
-    pub fn read_file(path: String) -> LinkResult<(String, KOFile)> {
-        let copied_path = String::clone(&path);
-        let path_obj = Path::new(&path);
+    pub fn read_file(path: impl Into<PathBuf>) -> LinkResult<(String, KOFile)> {
+        let path = path.into();
 
-        let file_name_os = path_obj
-            .file_name()
-            .ok_or(LinkError::InvalidPathError(copied_path))?;
+        let file_name_os = path.file_name().ok_or(LinkError::InvalidPathError(
+            path.to_str().unwrap().to_string(),
+        ))?;
         let file_name = file_name_os
             .to_owned()
             .into_string()
