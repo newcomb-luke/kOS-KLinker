@@ -1,13 +1,15 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+use kerbalobjects::ko::sections::DataIdx;
+use kerbalobjects::ko::symbols::OperandIndex;
+use kerbalobjects::ko::SectionIdx;
 use kerbalobjects::{
-    kofile::{
-        sections::SectionIndex,
+    ko::{
         symbols::{KOSymbol, ReldEntry},
         Instr, KOFile,
     },
-    FromBytes, KOSValue, Opcode, ToBytes,
+    BufferIterator, KOSValue, Opcode,
 };
 use klinker::{driver::Driver, CLIConfig};
 
@@ -24,9 +26,9 @@ fn link_with_globals() {
         .read_to_end(&mut buffer)
         .expect("Error reading main.ko");
 
-    let mut buffer_iter = buffer.iter().peekable();
+    let mut buffer_iter = BufferIterator::new(&buffer);
 
-    let main_ko = KOFile::from_bytes(&mut buffer_iter, false).expect("Error reading KO file");
+    let main_ko = KOFile::parse(&mut buffer_iter).expect("Error reading KO file");
 
     buffer.clear();
 
@@ -35,9 +37,9 @@ fn link_with_globals() {
         .read_to_end(&mut buffer)
         .expect("Error reading lib.ko");
 
-    buffer_iter = buffer.iter().peekable();
+    buffer_iter = BufferIterator::new(&buffer);
 
-    let lib_ko = KOFile::from_bytes(&mut buffer_iter, false).expect("Error reading KO file");
+    let lib_ko = KOFile::parse(&mut buffer_iter).expect("Error reading KO file");
 
     let config = CLIConfig {
         input_paths: Vec::new(),
@@ -56,7 +58,7 @@ fn link_with_globals() {
         Ok(ksm_file) => {
             let mut file_buffer = Vec::with_capacity(2048);
 
-            ksm_file.to_bytes(&mut file_buffer);
+            ksm_file.write(&mut file_buffer);
 
             let mut file =
                 std::fs::File::create("./tests/globals.ksm").expect("Cannot create globals.ksm");
@@ -74,11 +76,11 @@ fn link_with_globals() {
 fn write_link_with_globals_main() {
     let mut ko = KOFile::new();
 
-    let mut data_section = ko.new_datasection(".data");
-    let mut start = ko.new_funcsection("_start");
+    let mut data_section = ko.new_data_section(".data");
+    let mut start = ko.new_func_section("_start");
     let mut symtab = ko.new_symtab(".symtab");
     let mut symstrtab = ko.new_strtab(".symstrtab");
-    let mut reld_section = ko.new_reldsection(".reld");
+    let mut reld_section = ko.new_reld_section(".reld");
 
     let print_value = KOSValue::String(String::from("print()"));
     let print_value_index = data_section.add(print_value);
@@ -93,15 +95,15 @@ fn write_link_with_globals_main() {
 
     let number_symbol = KOSymbol::new(
         number_symbol_name_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Extern,
-        kerbalobjects::kofile::symbols::SymType::NoType,
-        data_section.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Extern,
+        kerbalobjects::ko::symbols::SymType::NoType,
+        data_section.section_index(),
     );
     let number_symbol_index = symtab.add(number_symbol);
 
-    let push_num_instr = Instr::OneOp(Opcode::Push, 0);
+    let push_num_instr = Instr::OneOp(Opcode::Push, DataIdx::PLACEHOLDER);
     let add_instr = Instr::ZeroOp(Opcode::Add);
     let push_marker = Instr::OneOp(Opcode::Push, marker_value_index);
     let call_print = Instr::TwoOp(Opcode::Call, empty_value_index, print_value_index);
@@ -112,8 +114,18 @@ fn write_link_with_globals_main() {
     start.add(add_instr);
     start.add(call_print);
 
-    let first_reld_entry = ReldEntry::new(start.section_index(), first, 0, number_symbol_index);
-    let second_reld_entry = ReldEntry::new(start.section_index(), second, 0, number_symbol_index);
+    let first_reld_entry = ReldEntry::new(
+        start.section_index(),
+        first,
+        OperandIndex::One,
+        number_symbol_index,
+    );
+    let second_reld_entry = ReldEntry::new(
+        start.section_index(),
+        second,
+        OperandIndex::One,
+        number_symbol_index,
+    );
 
     reld_section.add(first_reld_entry);
     reld_section.add(second_reld_entry);
@@ -121,21 +133,21 @@ fn write_link_with_globals_main() {
     let start_symbol_name_idx = symstrtab.add("_start");
     let start_symbol = KOSymbol::new(
         start_symbol_name_idx,
-        0,
+        DataIdx::PLACEHOLDER,
         start.size() as u16,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        3,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::Func,
+        start.section_index(),
     );
 
     let file_symbol_name_idx = symstrtab.add("main.ko");
     let file_symbol = KOSymbol::new(
         file_symbol_name_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::File,
-        0,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::File,
+        SectionIdx::NULL,
     );
 
     symtab.add(file_symbol);
@@ -149,9 +161,8 @@ fn write_link_with_globals_main() {
 
     let mut file_buffer = Vec::with_capacity(2048);
 
-    ko.update_headers()
-        .expect("Could not update KO headers properly");
-    ko.to_bytes(&mut file_buffer);
+    let ko = ko.validate().expect("Could not update KO headers properly");
+    ko.write(&mut file_buffer);
 
     let mut file = std::fs::File::create("./tests/global/main.ko")
         .expect("Output file could not be created: main.ko");
@@ -163,7 +174,7 @@ fn write_link_with_globals_main() {
 fn write_link_with_globals_lib() {
     let mut ko = KOFile::new();
 
-    let mut data_section = ko.new_datasection(".data");
+    let mut data_section = ko.new_data_section(".data");
     let mut symtab = ko.new_symtab(".symtab");
     let mut symstrtab = ko.new_strtab(".symstrtab");
 
@@ -176,20 +187,20 @@ fn write_link_with_globals_lib() {
         number_symbol_name_idx,
         number_value_idx,
         number_value_size as u16,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::NoType,
-        data_section.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::NoType,
+        data_section.section_index(),
     );
     symtab.add(number_symbol);
 
     let file_symbol_name_idx = symstrtab.add("lib.ko");
     let file_symbol = KOSymbol::new(
         file_symbol_name_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::File,
-        0,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::File,
+        SectionIdx::NULL,
     );
 
     symtab.add(file_symbol);
@@ -200,9 +211,8 @@ fn write_link_with_globals_lib() {
 
     let mut file_buffer = Vec::with_capacity(2048);
 
-    ko.update_headers()
-        .expect("Could not update KO headers properly");
-    ko.to_bytes(&mut file_buffer);
+    let ko = ko.validate().expect("Could not update KO headers properly");
+    ko.write(&mut file_buffer);
 
     let mut file = std::fs::File::create("./tests/global/lib.ko")
         .expect("Output file could not be created: lib.ko");

@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::slice::{Iter, IterMut};
 use std::vec::Drain;
 
-use kerbalobjects::{kofile::symbols::KOSymbol, KOSValue, Opcode};
+use kerbalobjects::{ko::symbols::KOSymbol, KOSValue, Opcode};
 
 mod nametables;
 pub use nametables::*;
@@ -16,7 +16,7 @@ pub enum ContextHash {
     FileNameHash(u64),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TempOperand {
     DataHash(u64),
     SymNameHash(u64),

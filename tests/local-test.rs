@@ -1,13 +1,15 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+use kerbalobjects::ko::sections::DataIdx;
+use kerbalobjects::ko::symbols::OperandIndex;
+use kerbalobjects::ko::SectionIdx;
 use kerbalobjects::{
-    kofile::{
-        sections::SectionIndex,
+    ko::{
         symbols::{KOSymbol, ReldEntry},
         Instr, KOFile,
     },
-    FromBytes, KOSValue, Opcode, ToBytes,
+    BufferIterator, KOSValue, Opcode,
 };
 use klinker::{driver::Driver, CLIConfig};
 
@@ -25,9 +27,9 @@ fn link_with_locals() {
         .read_to_end(&mut buffer)
         .expect("Error reading main.ko");
 
-    let mut buffer_iter = buffer.iter().peekable();
+    let mut buffer_iter = BufferIterator::new(&buffer);
 
-    let main_ko = KOFile::from_bytes(&mut buffer_iter, false).expect("Error reading KO file");
+    let main_ko = KOFile::parse(&mut buffer_iter).expect("Error reading KO file");
 
     buffer.clear();
 
@@ -37,9 +39,9 @@ fn link_with_locals() {
         .read_to_end(&mut buffer)
         .expect("Error reading floatlib.ko");
 
-    buffer_iter = buffer.iter().peekable();
+    buffer_iter = BufferIterator::new(&buffer);
 
-    let floatlib_ko = KOFile::from_bytes(&mut buffer_iter, false).expect("Error reading KO file");
+    let floatlib_ko = KOFile::parse(&mut buffer_iter).expect("Error reading KO file");
 
     buffer.clear();
 
@@ -49,9 +51,9 @@ fn link_with_locals() {
         .read_to_end(&mut buffer)
         .expect("Error reading intlib.ko");
 
-    buffer_iter = buffer.iter().peekable();
+    buffer_iter = BufferIterator::new(&buffer);
 
-    let intlib_ko = KOFile::from_bytes(&mut buffer_iter, false).expect("Error reading KO file");
+    let intlib_ko = KOFile::parse(&mut buffer_iter).expect("Error reading KO file");
 
     let config = CLIConfig {
         input_paths: Vec::new(),
@@ -71,7 +73,7 @@ fn link_with_locals() {
         Ok(ksm_file) => {
             let mut file_buffer = Vec::with_capacity(2048);
 
-            ksm_file.to_bytes(&mut file_buffer);
+            ksm_file.write(&mut file_buffer);
 
             let mut file =
                 std::fs::File::create("./tests/locals.ksm").expect("Cannot create locals.ksm");
@@ -91,11 +93,11 @@ fn write_main() {
 
     let file_name = "./tests/local/main.ko";
 
-    let mut data_section = ko.new_datasection(".data");
-    let mut start = ko.new_funcsection("_start");
+    let mut data_section = ko.new_data_section(".data");
+    let mut start = ko.new_func_section("_start");
     let mut symtab = ko.new_symtab(".symtab");
     let mut symstrtab = ko.new_strtab(".symstrtab");
-    let mut reld_section = ko.new_reldsection(".reld");
+    let mut reld_section = ko.new_reld_section(".reld");
 
     let marker_value = KOSValue::ArgMarker;
     let marker_value_index = data_section.add(marker_value);
@@ -123,21 +125,21 @@ fn write_main() {
 
     let add_floats = KOSymbol::new(
         add_floats_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Extern,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        data_section.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Extern,
+        kerbalobjects::ko::symbols::SymType::Func,
+        data_section.section_index(),
     );
     let add_floats_sym = symtab.add(add_floats);
 
     let add_ints = KOSymbol::new(
         add_ints_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Extern,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        data_section.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Extern,
+        kerbalobjects::ko::symbols::SymType::Func,
+        data_section.section_index(),
     );
     let add_ints_sym = symtab.add(add_ints);
 
@@ -170,8 +172,8 @@ fn write_main() {
 
     let reset_label = Instr::OneOp(Opcode::Lbrt, label_1_index);
     let push_marker = Instr::OneOp(Opcode::Push, marker_value_index);
-    let call_floats = Instr::TwoOp(Opcode::Call, 0, null_value_index);
-    let call_ints = Instr::TwoOp(Opcode::Call, 0, null_value_index);
+    let call_floats = Instr::TwoOp(Opcode::Call, DataIdx::PLACEHOLDER, null_value_index);
+    let call_ints = Instr::TwoOp(Opcode::Call, DataIdx::PLACEHOLDER, null_value_index);
     let push_float = Instr::OneOp(Opcode::Push, float_num_index);
     let push_int = Instr::OneOp(Opcode::Push, int_num_index);
     let call_print = Instr::TwoOp(Opcode::Call, null_value_index, print_index);
@@ -202,8 +204,18 @@ fn write_main() {
     start.add(push_0);
     start.add(eop);
 
-    let float_entry = ReldEntry::new(start.section_index(), float_instr, 0, add_floats_sym);
-    let int_entry = ReldEntry::new(start.section_index(), int_instr, 0, add_ints_sym);
+    let float_entry = ReldEntry::new(
+        start.section_index(),
+        float_instr,
+        OperandIndex::One,
+        add_floats_sym,
+    );
+    let int_entry = ReldEntry::new(
+        start.section_index(),
+        int_instr,
+        OperandIndex::One,
+        add_ints_sym,
+    );
 
     reld_section.add(float_entry);
     reld_section.add(int_entry);
@@ -211,21 +223,21 @@ fn write_main() {
     let start_symbol_name_idx = symstrtab.add("_start");
     let start_symbol = KOSymbol::new(
         start_symbol_name_idx,
-        0,
+        DataIdx::PLACEHOLDER,
         start.size() as u16,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        3,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::Func,
+        start.section_index(),
     );
 
     let file_symbol_name_idx = symstrtab.add("main.kasm");
     let file_symbol = KOSymbol::new(
         file_symbol_name_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::File,
-        0,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::File,
+        SectionIdx::NULL,
     );
 
     symtab.add(file_symbol);
@@ -239,9 +251,8 @@ fn write_main() {
 
     let mut file_buffer = Vec::with_capacity(2048);
 
-    ko.update_headers()
-        .expect("Could not update KO headers properly");
-    ko.to_bytes(&mut file_buffer);
+    let ko = ko.validate().expect("Could not update KO headers properly");
+    ko.write(&mut file_buffer);
 
     let mut file = std::fs::File::create(file_name)
         .expect("Output file could not be created: test-local-main.ko");
@@ -255,13 +266,13 @@ fn write_floatlib() {
 
     let file_name = "./tests/local/floatlib.ko";
 
-    let mut data_section = ko.new_datasection(".data");
+    let mut data_section = ko.new_data_section(".data");
     let mut symtab = ko.new_symtab(".symtab");
     let mut symstrtab = ko.new_strtab(".symstrtab");
-    let mut reld_section = ko.new_reldsection(".reld");
+    let mut reld_section = ko.new_reld_section(".reld");
 
-    let mut add_floats_func = ko.new_funcsection("add_floats");
-    let mut _add_func = ko.new_funcsection("_add");
+    let mut add_floats_func = ko.new_func_section("add_floats");
+    let mut _add_func = ko.new_func_section("_add");
 
     let null_value = KOSValue::Null;
     let null_value_index = data_section.add(null_value);
@@ -272,33 +283,33 @@ fn write_floatlib() {
     let add_floats_idx = symstrtab.add("add_floats");
     let add_floats = KOSymbol::new(
         add_floats_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        add_floats_func.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::Func,
+        add_floats_func.section_index(),
     );
     symtab.add(add_floats);
 
     let _add_idx = symstrtab.add("_add");
     let _add = KOSymbol::new(
         _add_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Local,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        _add_func.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Local,
+        kerbalobjects::ko::symbols::SymType::Func,
+        _add_func.section_index(),
     );
     let _add_sym = symtab.add(_add);
 
     let file_symbol_name_idx = symstrtab.add("floatlib.kasm");
     let file_symbol = KOSymbol::new(
         file_symbol_name_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::File,
-        0,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::File,
+        SectionIdx::NULL,
     );
 
     // global add_floats
@@ -313,7 +324,7 @@ fn write_floatlib() {
     //      add
     //      ret 0
 
-    let call_add = Instr::TwoOp(Opcode::Call, 0, null_value_index);
+    let call_add = Instr::TwoOp(Opcode::Call, DataIdx::PLACEHOLDER, null_value_index);
     let ret_0 = Instr::OneOp(Opcode::Ret, zero_index);
     let add = Instr::ZeroOp(Opcode::Add);
 
@@ -323,7 +334,12 @@ fn write_floatlib() {
     _add_func.add(add);
     _add_func.add(ret_0);
 
-    let reld_entry = ReldEntry::new(add_floats_func.section_index(), call_instr, 0, _add_sym);
+    let reld_entry = ReldEntry::new(
+        add_floats_func.section_index(),
+        call_instr,
+        OperandIndex::One,
+        _add_sym,
+    );
 
     reld_section.add(reld_entry);
 
@@ -338,9 +354,8 @@ fn write_floatlib() {
 
     let mut file_buffer = Vec::with_capacity(2048);
 
-    ko.update_headers()
-        .expect("Could not update KO headers properly");
-    ko.to_bytes(&mut file_buffer);
+    let ko = ko.validate().expect("Could not update KO headers properly");
+    ko.write(&mut file_buffer);
 
     let mut file =
         std::fs::File::create(file_name).expect("Output file could not be created: funclib.ko");
@@ -354,13 +369,13 @@ fn write_intlib() {
 
     let file_name = "./tests/local/intlib.ko";
 
-    let mut data_section = ko.new_datasection(".data");
+    let mut data_section = ko.new_data_section(".data");
     let mut symtab = ko.new_symtab(".symtab");
     let mut symstrtab = ko.new_strtab(".symstrtab");
-    let mut reld_section = ko.new_reldsection(".reld");
+    let mut reld_section = ko.new_reld_section(".reld");
 
-    let mut add_ints_func = ko.new_funcsection("add_ints");
-    let mut _add_func = ko.new_funcsection("_add");
+    let mut add_ints_func = ko.new_func_section("add_ints");
+    let mut _add_func = ko.new_func_section("_add");
 
     let null_value = KOSValue::Null;
     let null_value_index = data_section.add(null_value);
@@ -371,33 +386,33 @@ fn write_intlib() {
     let add_ints_idx = symstrtab.add("add_ints");
     let add_ints = KOSymbol::new(
         add_ints_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        add_ints_func.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::Func,
+        add_ints_func.section_index(),
     );
     symtab.add(add_ints);
 
     let _add_idx = symstrtab.add("_add");
     let _add = KOSymbol::new(
         _add_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Local,
-        kerbalobjects::kofile::symbols::SymType::Func,
-        _add_func.section_index() as u16,
+        kerbalobjects::ko::symbols::SymBind::Local,
+        kerbalobjects::ko::symbols::SymType::Func,
+        _add_func.section_index(),
     );
     let _add_sym = symtab.add(_add);
 
     let file_symbol_name_idx = symstrtab.add("floatlib.ko");
     let file_symbol = KOSymbol::new(
         file_symbol_name_idx,
+        DataIdx::PLACEHOLDER,
         0,
-        0,
-        kerbalobjects::kofile::symbols::SymBind::Global,
-        kerbalobjects::kofile::symbols::SymType::File,
-        0,
+        kerbalobjects::ko::symbols::SymBind::Global,
+        kerbalobjects::ko::symbols::SymType::File,
+        SectionIdx::NULL,
     );
 
     // global add_floats
@@ -413,7 +428,7 @@ fn write_intlib() {
     //      nop
     //      ret 0
 
-    let call_add = Instr::TwoOp(Opcode::Call, 0, null_value_index);
+    let call_add = Instr::TwoOp(Opcode::Call, DataIdx::PLACEHOLDER, null_value_index);
     let ret_0 = Instr::OneOp(Opcode::Ret, zero_index);
     let add = Instr::ZeroOp(Opcode::Add);
     let nop = Instr::ZeroOp(Opcode::Nop);
@@ -425,7 +440,12 @@ fn write_intlib() {
     _add_func.add(nop);
     _add_func.add(ret_0);
 
-    let reld_entry = ReldEntry::new(add_ints_func.section_index(), call_instr, 0, _add_sym);
+    let reld_entry = ReldEntry::new(
+        add_ints_func.section_index(),
+        call_instr,
+        OperandIndex::One,
+        _add_sym,
+    );
 
     reld_section.add(reld_entry);
 
@@ -440,9 +460,8 @@ fn write_intlib() {
 
     let mut file_buffer = Vec::with_capacity(2048);
 
-    ko.update_headers()
-        .expect("Could not update KO headers properly");
-    ko.to_bytes(&mut file_buffer);
+    let ko = ko.validate().expect("Could not update KO headers properly");
+    ko.write(&mut file_buffer);
 
     let mut file =
         std::fs::File::create(file_name).expect("Output file could not be created: funclib.ko");
