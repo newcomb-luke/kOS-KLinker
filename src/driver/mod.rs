@@ -5,10 +5,14 @@ use crate::tables::{
 };
 use crate::CLIConfig;
 use errors::LinkResult;
-use kerbalobjects::kofile::symbols::{SymBind, SymType};
-use kerbalobjects::kofile::KOFile;
-use kerbalobjects::ksmfile::sections::{ArgumentSection, CodeSection, DebugEntry, DebugRange};
-use kerbalobjects::ksmfile::{Instr, KSMFile};
+use kerbalobjects::ko::sections::DataIdx;
+use kerbalobjects::ko::symbols::{SymBind, SymType};
+use kerbalobjects::ko::KOFile;
+use kerbalobjects::ksm::sections::{
+    ArgIndex, ArgumentSection, CodeSection, DebugEntry, DebugRange, DebugSection,
+};
+use kerbalobjects::ksm::KSMFile;
+use kerbalobjects::ksm::{Instr, KSMFileBuilder};
 use kerbalobjects::{KOSValue, Opcode};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -90,13 +94,13 @@ impl Driver {
 
         let mut temporary_function_vec = Vec::new();
 
-        let mut ksm_file = KSMFile::new();
-        let arg_section = ksm_file.arg_section_mut();
+        let builder = KSMFileBuilder::new();
+        let mut arg_section = ArgumentSection::new();
         // We only have one single code section that contains all executable instructions
-        let mut code_section = CodeSection::new(kerbalobjects::ksmfile::sections::CodeType::Main);
+        let mut code_section = CodeSection::new(kerbalobjects::ksm::sections::CodeType::Main);
 
         // Maps data hashes to arg section indexes
-        let mut data_hash_map = HashMap::<u64, usize>::new();
+        let mut data_hash_map = HashMap::<u64, ArgIndex>::new();
         // Maps function name hashes to absolute instruction indexes
         let mut func_hash_map = HashMap::<u64, usize>::new();
         // Keeps track of all of the functions that are referenced
@@ -147,7 +151,7 @@ impl Driver {
         // At this point all of the symbols will have been resolved. Now we should check if there
         // are any external symbols left (bad!)
         for symbol_entry in master_symbol_table.entries() {
-            if symbol_entry.value().internal().sym_bind() == SymBind::Extern {
+            if symbol_entry.value().internal().sym_bind == SymBind::Extern {
                 let name = symbol_entry.name().to_owned();
                 return Err(LinkError::UnresolvedExternalSymbolError(name));
             }
@@ -269,7 +273,7 @@ impl Driver {
             let object_data_index = func.object_data_index();
             Driver::add_func_to_code_section(
                 &mut func,
-                arg_section,
+                &mut arg_section,
                 &mut code_section,
                 &master_symbol_table,
                 &master_data_table,
@@ -280,20 +284,19 @@ impl Driver {
             )?;
         }
 
-        let init_section =
-            CodeSection::new(kerbalobjects::ksmfile::sections::CodeType::Initialization);
-        let func_section = CodeSection::new(kerbalobjects::ksmfile::sections::CodeType::Function);
+        let init_section = CodeSection::new(kerbalobjects::ksm::sections::CodeType::Initialization);
+        let func_section = CodeSection::new(kerbalobjects::ksm::sections::CodeType::Function);
 
-        ksm_file.add_code_section(func_section);
-        ksm_file.add_code_section(init_section);
-        ksm_file.add_code_section(code_section);
+        let builder = builder.with_arg_section(arg_section);
 
-        let mut debug_entry = DebugEntry::new(1);
-        debug_entry.add(DebugRange::new(2, 4));
+        let builder = builder
+            .with_code_section(func_section)
+            .with_code_section(init_section)
+            .with_code_section(code_section);
 
-        ksm_file.debug_section_mut().add(debug_entry);
+        let debug_section = DebugSection::new(DebugEntry::new(1).with_range(DebugRange::new(2, 4)));
 
-        Ok(ksm_file)
+        Ok(builder.with_debug_section(debug_section).finish())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -305,7 +308,7 @@ impl Driver {
         master_data_table: &DataTable,
         master_function_name_table: &NameTable<NonZeroUsize>,
         func_hash_map: &HashMap<u64, usize>,
-        data_hash_map: &mut HashMap<u64, usize>,
+        data_hash_map: &mut HashMap<u64, ArgIndex>,
         object_data: &ObjectData,
     ) -> LinkResult<()> {
         for (instr_index, instr) in func.drain().into_iter().enumerate() {
@@ -338,14 +341,14 @@ impl Driver {
             // Local symbols have higher priority
             if let Some(sym) = local_symbol_table.get_by_hash(*hash) {
                 // If it is a function
-                if sym.internal().sym_type() == SymType::Func {
+                if sym.internal().sym_type == SymType::Func {
                     // The boolean represents if it was a global symbol
                     Some((false, *hash))
                 } else {
                     None
                 }
             } else if let Some(sym) = master_symbol_table.get_by_hash(*hash) {
-                if sym.value().internal().sym_type() == SymType::Func {
+                if sym.value().internal().sym_type == SymType::Func {
                     Some((true, *hash))
                 } else {
                     None
@@ -506,7 +509,7 @@ impl Driver {
         master_data_table: &DataTable,
         master_function_name_table: &NameTable<NonZeroUsize>,
         func_hash_map: &HashMap<u64, usize>,
-        data_hash_map: &mut HashMap<u64, usize>,
+        data_hash_map: &mut HashMap<u64, ArgIndex>,
         object_data: &ObjectData,
         func_name_hash: u64,
         instr_index: usize,
@@ -575,11 +578,11 @@ impl Driver {
         master_symbol_table: &NameTable<MasterSymbolEntry>,
         master_data_table: &DataTable,
         func_hash_map: &HashMap<u64, usize>,
-        data_hash_map: &mut HashMap<u64, usize>,
+        data_hash_map: &mut HashMap<u64, ArgIndex>,
         object_data: &ObjectData,
         func_name: &String,
         instr_index: usize,
-    ) -> LinkResult<usize> {
+    ) -> LinkResult<ArgIndex> {
         match op {
             TempOperand::DataHash(hash) => match data_hash_map.get(&hash) {
                 Some(index) => Ok(*index),
@@ -607,9 +610,9 @@ impl Driver {
                     },
                 };
 
-                match sym.sym_type() {
+                match sym.sym_type {
                     SymType::Func => {
-                        let func_loc = if sym.sym_bind() == SymBind::Global {
+                        let func_loc = if sym.sym_bind == SymBind::Global {
                             func_hash_map.get(&hash).unwrap()
                         } else {
                             object_data.local_function_hash_map.get(&hash).unwrap()
@@ -634,7 +637,8 @@ impl Driver {
                     }
                     SymType::NoType => {
                         // SAFETY: As usual, we add 1 so it is safe
-                        let index = unsafe { NonZeroUsize::new_unchecked(sym.value_idx() + 1) };
+                        let index =
+                            unsafe { NonZeroUsize::new_unchecked(usize::from(sym.value_idx) + 1) };
 
                         let data_hash = master_data_table.hash_at(index).unwrap();
 
@@ -671,9 +675,9 @@ impl Driver {
                 .unwrap();
 
             // If it is not a local symbol
-            if symbol.internal().sym_bind() != SymBind::Local {
+            if symbol.internal().sym_bind != SymBind::Local {
                 // If it is a function symbol
-                if symbol.internal().sym_type() == SymType::Func {
+                if symbol.internal().sym_type == SymType::Func {
                     // Set the context to be correct
                     symbol.set_context(file_name_hash);
 
@@ -686,27 +690,27 @@ impl Driver {
                 match master_symbol_table.get_by_hash(symbol.name_hash()) {
                     Some(other_symbol) => {
                         // If the found symbol is external
-                        if other_symbol.value().internal().sym_bind() == SymBind::Extern {
+                        if other_symbol.value().internal().sym_bind == SymBind::Extern {
                             // If this new symbol is _not_ external
-                            if symbol.internal().sym_bind() != SymBind::Extern {
-                                let new_data_idx = if symbol.internal().sym_type() != SymType::Func
+                            if symbol.internal().sym_bind != SymBind::Extern {
+                                let new_data_idx = if symbol.internal().sym_type == SymType::NoType
                                 {
                                     let data_index = unsafe {
                                         NonZeroUsize::new_unchecked(
-                                            symbol.internal().value_idx() + 1,
+                                            usize::from(symbol.internal().value_idx) + 1,
                                         )
                                     };
                                     let data = object_data.data_table.get_at(data_index).unwrap();
 
                                     let (_, non_zero_idx) = master_data_table.add(data.clone());
 
-                                    non_zero_idx.get() - 1
+                                    DataIdx::from(non_zero_idx.get() - 1)
                                 } else {
-                                    // If this is a function, set the data index to 0, it won't be needed
-                                    0
+                                    // If this is a function, set the data index to the placeholder, it won't be needed
+                                    DataIdx::PLACEHOLDER
                                 };
 
-                                symbol.internal_mut().set_value_idx(new_data_idx);
+                                symbol.internal_mut().value_idx = new_data_idx;
                                 let new_symbol = *symbol.internal();
 
                                 let new_symbol_entry =
@@ -726,7 +730,7 @@ impl Driver {
                         // If it isn't external
                         else {
                             // Check if we are not external
-                            if symbol.internal().sym_bind() != SymBind::Extern {
+                            if symbol.internal().sym_bind != SymBind::Extern {
                                 // Duplicate symbol!
 
                                 let file_error_context = FileErrorContext {
@@ -778,23 +782,26 @@ impl Driver {
                         }
                     }
                     None => {
-                        let new_data_idx = if symbol.internal().sym_type() != SymType::Func {
+                        let new_symbol = if symbol.internal().sym_type == SymType::NoType {
                             let data_index = unsafe {
-                                NonZeroUsize::new_unchecked(symbol.internal().value_idx() + 1)
+                                NonZeroUsize::new_unchecked(
+                                    usize::from(symbol.internal().value_idx) + 1,
+                                )
                             };
 
-                            let data = object_data.data_table.get_at(data_index).unwrap();
+                            if let Some(data) = object_data.data_table.get_at(data_index) {
+                                let (_, non_zero_idx) = master_data_table.add(data.clone());
 
-                            let (_, non_zero_idx) = master_data_table.add(data.clone());
+                                let new_data_idx = DataIdx::from(non_zero_idx.get() - 1);
 
-                            non_zero_idx.get() - 1
+                                symbol.internal_mut().value_idx = new_data_idx;
+                            }
+
+                            *symbol.internal()
                         } else {
-                            // If this is a function, set the data index to 0, it won't be needed
-                            0
+                            // If this is a function, don't set the data index it won't be needed
+                            *symbol.internal()
                         };
-
-                        symbol.internal_mut().set_value_idx(new_data_idx);
-                        let new_symbol = *symbol.internal();
 
                         let new_symbol_entry = MasterSymbolEntry::new(new_symbol, symbol.context());
                         let new_name_entry =

@@ -1,24 +1,23 @@
+use kerbalobjects::ko::errors::KOParseError;
 use std::{
     error::Error,
     ffi::OsString,
     fmt::{Display, Formatter},
 };
 
-use kerbalobjects::errors::ReadError;
-
 pub type LinkResult<T> = Result<T, LinkError>;
 
 #[derive(Debug)]
 pub enum LinkError {
     IOError(OsString, std::io::ErrorKind),
-    FileReadError(OsString, ReadError),
+    FileReadError(OsString, KOParseError),
     InvalidPathError(String),
     MissingSectionError(String, String),
     MissingFileSymbolNameError(String),
     FileContextError(FileErrorContext, ProcessingError),
     FuncContextError(FuncErrorContext, ProcessingError),
     MissingFileSymbolError(String),
-    MissingFunctionNameError(String, String, usize),
+    MissingFunctionNameError(String, String, u16),
     StringConversionError,
     InternalError(String),
     DataIndexOverflowError,

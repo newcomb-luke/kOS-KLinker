@@ -8,8 +8,6 @@ pub mod driver;
 
 pub mod tables;
 
-use kerbalobjects::ToBytes;
-
 pub static VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn run(config: &CLIConfig) -> Result<(), Box<dyn Error>> {
@@ -29,7 +27,7 @@ pub fn run(config: &CLIConfig) -> Result<(), Box<dyn Error>> {
 
     let mut file_buffer = Vec::with_capacity(2048);
 
-    ksm_file.to_bytes(&mut file_buffer);
+    ksm_file.write(&mut file_buffer);
 
     let mut file = std::fs::File::create(output_path)?;
 
