@@ -16,3 +16,8 @@ kerbalobjects = "3.1.13"
 [[bin]]
 name = "kld"
 path = "src/main.rs"
+
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
