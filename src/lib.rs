@@ -50,7 +50,12 @@ pub struct CLIConfig {
     )]
     pub input_paths: Vec<PathBuf>,
     /// The required output path. Extension optional.
-    #[arg(value_name = "OUTPUT", help = "The output file path")]
+    #[arg(
+        value_name = "OUTPUT",
+        short = 'o',
+        long = "output",
+        help = "The output file path"
+    )]
     pub output_path: PathBuf,
     /// A custom entry-point for the KSM program. Defaults to _start
     #[arg(
@@ -58,7 +63,7 @@ pub struct CLIConfig {
         long = "entry-point",
         require_equals = true,
         value_name = "NAME",
-        default_value = "_init",
+        default_value = "_start",
         help = "The name of the function that the program should begin execution in"
     )]
     pub entry_point: String,
