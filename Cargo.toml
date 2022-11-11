@@ -11,7 +11,7 @@ homepage = "https://github.com/newcomb-luke/kOS-KLinker"
 [dependencies]
 clap = { version = "4.0.18", features = ["derive"] }
 flate2 = "1.0"
-kerbalobjects = "4.0"
+kerbalobjects = "4.0.2"
 
 [[bin]]
 name = "kld"
