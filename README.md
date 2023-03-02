@@ -4,7 +4,7 @@
 [<img src="https://img.shields.io/crates/v/klinker?color=fc8d62&logo=rust&style=for-the-badge" alt="github" height="24">](https://crates.io/crates/klinker)
 [<img alt="License" src="https://img.shields.io/github/license/newcomb-luke/kOS-KLinker?style=for-the-badge" height="24">]()
 
-[<img alt="GitHub Workflow Status" src="https://img.shields.io/github/workflow/status/newcomb-luke/kOS-KLinker/Rust%20CI?style=for-the-badge" height="24">]()
+[<img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/newcomb-luke/kOS-KLinker/main.yml?style=for-the-badge" height="24">]()
 [<img alt="Libraries.io dependency status for GitHub repo" src="https://img.shields.io/librariesio/github/newcomb-luke/kOS-KLinker?style=for-the-badge" height="24">](https://deps.rs/repo/github/newcomb-luke/kOS-KLinker)
 [<img alt="Crates.io Downloads" src="https://img.shields.io/crates/d/klinker?style=for-the-badge" height="24">]()
 
