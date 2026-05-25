@@ -114,7 +114,7 @@ impl Function {
         self.instructions.push(instr);
     }
 
-    pub fn instructions(&self) -> Iter<TempInstr> {
+    pub fn instructions(&'_ self) -> Iter<'_, TempInstr> {
         self.instructions.iter()
     }
 
@@ -146,11 +146,11 @@ impl FunctionTable {
         self.entries.push(func);
     }
 
-    pub fn functions(&self) -> Iter<Function> {
+    pub fn functions(&'_ self) -> Iter<'_, Function> {
         self.entries.iter()
     }
 
-    pub fn functions_mut(&mut self) -> IterMut<Function> {
+    pub fn functions_mut(&'_ mut self) -> IterMut<'_, Function> {
         self.entries.iter_mut()
     }
 
@@ -240,11 +240,11 @@ impl SymbolTable {
         unsafe { NonZeroUsize::new_unchecked(self.entries.len()) }
     }
 
-    pub fn symbols(&self) -> Iter<SymbolEntry> {
+    pub fn symbols(&'_ self) -> Iter<'_, SymbolEntry> {
         self.entries.iter()
     }
 
-    pub fn drain(&mut self) -> Drain<SymbolEntry> {
+    pub fn drain(&'_ mut self) -> Drain<'_, SymbolEntry> {
         self.entries.drain(..)
     }
 
@@ -295,11 +295,11 @@ impl DataTable {
         self.hashes.get(index.get() - 1)
     }
 
-    pub fn entries(&self) -> Iter<KOSValue> {
+    pub fn entries(&'_ self) -> Iter<'_, KOSValue> {
         self.data.iter()
     }
 
-    pub fn hashes(&self) -> Iter<u64> {
+    pub fn hashes(&'_ self) -> Iter<'_, u64> {
         self.hashes.iter()
     }
 

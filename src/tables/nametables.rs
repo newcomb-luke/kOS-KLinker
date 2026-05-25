@@ -162,11 +162,11 @@ impl<T> NameTable<T> {
         self.position_by_hash(hash).is_some()
     }
 
-    pub fn entries(&self) -> Iter<NameTableEntry<T>> {
+    pub fn entries(&'_ self) -> Iter<'_, NameTableEntry<T>> {
         self.entries.iter()
     }
 
-    pub fn entries_mut(&mut self) -> IterMut<NameTableEntry<T>> {
+    pub fn entries_mut(&'_ mut self) -> IterMut<'_, NameTableEntry<T>> {
         self.entries.iter_mut()
     }
 
