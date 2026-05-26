@@ -1,6 +1,6 @@
 [package]
 name = "klinker"
-version = "3.0.3"
+version = "3.0.4"
 authors = ["Luke Newcomb <newcomb.luke@protonmail.com>"]
 edition = "2021"
 license = "GPL-3.0"
@@ -11,7 +11,7 @@ homepage = "https://github.com/newcomb-luke/kOS-KLinker"
 [dependencies]
 clap = { version = "4.0.18", features = ["derive"] }
 flate2 = "1.0"
-kerbalobjects = "4.0.4"
+kerbalobjects = "4.1.0"
 
 [[bin]]
 name = "kld"
